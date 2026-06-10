@@ -199,7 +199,8 @@ def _planner_system_prompt() -> str:
     return (
         "You are a ReAct CRM agent. Return ONLY JSON with keys thought, action, action_input. "
         "action must be one tool name or DONE. Maximize customer safety. Never choose send_auto_reply "
-        "for Critical urgency, Legal, Compliance, security threats, or spam."
+        "for Critical urgency, Legal, Compliance, security threats, or spam. "
+        "Trigger scrape_public_sentiment if the email contains review keywords, sentiment < -0.6, or is a High/Critical Complaint."
     )
 
 
@@ -230,6 +231,13 @@ def _fallback_next_action(email: Email, reasoning_log: list[dict[str, Any]]) -> 
             "thought": "Gather prior customer context before deciding.",
             "action": "get_thread_history",
             "action_input": {"sender_email": email.sender},
+        }
+    if _should_trigger_scraping(email) and "scrape_public_sentiment" not in actions_so_far:
+        company = email.sender.split("@")[-1].split(".")[0].capitalize()
+        return {
+            "thought": "Reputation scrape trigger met. Check G2/Trustpilot reviews.",
+            "action": "scrape_public_sentiment",
+            "action_input": {"company_name": company},
         }
     if "search_knowledge_base" not in actions_so_far:
         return {
@@ -296,6 +304,15 @@ def _mandatory_bob_outage_plan(email: Email) -> list[dict[str, Any]] | None:
             },
         },
     ]
+
+
+def _should_trigger_scraping(email: Email) -> bool:
+    text = f"{email.subject or ''}\n{email.body or ''}".lower()
+    keywords = {"review", "trustpilot", "g2", "twitter", "post publicly"}
+    body_matches = any(kw in text for kw in keywords)
+    sentiment_matches = email.sentiment_score is not None and email.sentiment_score < -0.6
+    complaint_matches = email.category == "Complaint" and email.urgency in {"High", "Critical"}
+    return body_matches or sentiment_matches or complaint_matches
 
 
 def _auto_reply_blocked(email: Email) -> bool:

@@ -9,6 +9,7 @@ from app.services.rag_pipeline import (
 )
 from app.services.sentiment_tracker import compute_moving_average, detect_deterioration, get_sentiment_trend
 from app.services.agent import run as run_agent
+from app.services.web_scraper import scrape_trustpilot, scrape_g2
 
 __all__ = [
     "HeuristicResult",
@@ -23,4 +24,6 @@ __all__ = [
     "run_agent",
     "seed_knowledge_base",
     "store_chunks",
+    "scrape_trustpilot",
+    "scrape_g2",
 ]

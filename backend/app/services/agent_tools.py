@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models import Action, AuditLog, Contact, Email, Thread, WebIntelligenceCache
 from app.services.rag_pipeline import retrieve_relevant_chunks
+from app.services.web_scraper import scrape_trustpilot, scrape_g2
 
 
 async def search_knowledge_base(query: str, db: AsyncSession, embedder: Any) -> dict[str, Any]:
@@ -273,16 +274,10 @@ def _uuid(value: str) -> UUID:
 
 
 async def _scrape_review_sites(company_name: str) -> dict[str, Any]:
-    urls = [
-        f"https://www.trustpilot.com/search?query={company_name}",
-        f"https://www.g2.com/search?query={company_name}",
-    ]
-    mentions = []
-    async with httpx.AsyncClient(timeout=settings.scrape_timeout_seconds, follow_redirects=True) as client:
-        for url in urls:
-            response = await client.get(url)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, "html.parser")
-            text = " ".join(soup.get_text(" ").split())[:1200]
-            mentions.append({"source_url": url, "summary_text": text})
-    return {"mentions": mentions, "scraped_at": datetime.now(timezone.utc).isoformat()}
+    trustpilot_res = await scrape_trustpilot(company_name)
+    g2_res = await scrape_g2(company_name)
+    return {
+        "trustpilot": trustpilot_res,
+        "g2": g2_res,
+        "scraped_at": datetime.now(timezone.utc).isoformat(),
+    }
