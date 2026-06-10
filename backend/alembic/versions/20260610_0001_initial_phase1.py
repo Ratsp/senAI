@@ -100,10 +100,10 @@ def upgrade() -> None:
         sa.Column("embedding", Vector(384), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     )
-    op.execute(
-        "CREATE INDEX ix_knowledge_chunks_embedding_ivfflat "
-        "ON knowledge_chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)"
-    )
+    # op.execute(
+    #     "CREATE INDEX ix_knowledge_chunks_embedding_ivfflat "
+    #     "ON knowledge_chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)"
+    # )
 
     op.create_table(
         "web_intelligence_cache",
@@ -134,7 +134,7 @@ def downgrade() -> None:
     op.drop_index(op.f("ix_web_intelligence_cache_target_entity"), table_name="web_intelligence_cache")
     op.drop_index(op.f("ix_web_intelligence_cache_expires_at"), table_name="web_intelligence_cache")
     op.drop_table("web_intelligence_cache")
-    op.execute("DROP INDEX IF EXISTS ix_knowledge_chunks_embedding_ivfflat")
+    # op.execute("DROP INDEX IF EXISTS ix_knowledge_chunks_embedding_ivfflat")
     op.drop_table("knowledge_chunks")
     op.drop_index(op.f("ix_actions_email_id"), table_name="actions")
     op.drop_table("actions")
