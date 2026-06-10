@@ -1,0 +1,1 @@
+"""SenAI backend application package."""

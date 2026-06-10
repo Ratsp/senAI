@@ -1,0 +1,26 @@
+[project]
+name = "senai"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+backend = [
+    "alembic==1.14.0",
+    "asyncpg==0.30.0",
+    "beautifulsoup4==4.12.3",
+    "email-validator==2.2.0",
+    "fastapi==0.115.6",
+    "greenlet==3.1.1",
+    "groq==0.13.1",
+    "httpx==0.28.1",
+    "pgvector==0.3.6",
+    "pydantic-settings==2.7.1",
+    "python-dotenv==1.0.1",
+    "sentence-transformers==3.3.1",
+    "sqlalchemy==2.0.36",
+    "tiktoken==0.8.0",
+    "uvicorn[standard]==0.34.0",
+]
