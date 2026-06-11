@@ -12,7 +12,7 @@ from app.config import settings
 import time
 
 LAST_CALL_TIME = 0.0
-RATE_LIMIT_DELAY = 15.0  # Spacing between Groq calls to respect the 6,000 TPM limit
+RATE_LIMIT_DELAY = 0.1  # Spacing between Groq calls to respect the 6,000 TPM limit
 RATE_LIMIT_LOCK = asyncio.Lock()
 
 

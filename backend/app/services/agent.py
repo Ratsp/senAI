@@ -390,7 +390,8 @@ async def _ask_groq_for_next_action(email: SimpleEmail, reasoning_log: list[dict
             groq_api_key=settings.groq_api_key,
             model_name=settings.llm_model,
             temperature=0.0,
-            response_format={"type": "json_object"}
+            response_format={"type": "json_object"},
+            max_retries=1
         )
         
         gemini_llm = ChatGoogleGenerativeAI(
@@ -821,5 +822,10 @@ def _final_action_type(reasoning_log: list[dict[str, Any]]) -> str:
     return "Ignored"
 
 
-def _uuid(value: str) -> UUID:
-    return value if isinstance(value, UUID) else UUID(str(value))
+def _uuid(value: Any) -> UUID | None:
+    if isinstance(value, UUID):
+        return value
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError):
+        return None

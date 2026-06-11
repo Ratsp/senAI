@@ -385,8 +385,13 @@ def _risk_level(churn_risk_score: float, open_thread_count: int) -> str:
     return "Low"
 
 
-def _uuid(value: str) -> UUID:
-    return value if isinstance(value, UUID) else UUID(str(value))
+def _uuid(value: Any) -> UUID | None:
+    if isinstance(value, UUID):
+        return value
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError):
+        return None
 
 
 async def _scrape_review_sites(company_name: str) -> dict[str, Any]:

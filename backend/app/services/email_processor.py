@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -21,7 +22,8 @@ class SimpleEmail:
             setattr(self, k, v)
 
 
-SEMAPHORE = asyncio.Semaphore(3)
+SEMAPHORE = asyncio.Semaphore(15)
+logger = logging.getLogger("email_processor")
 
 
 async def process_email_job(
@@ -143,9 +145,33 @@ async def _process_email_job_impl(
             # 2. Run the ReAct agent loop
             agent_skipped = False
             skip_reason = None
+
+            from app.services.heuristic_filter import SPAM_KEYWORDS, SPAM_DOMAINS, _domain, _contains_any
+            text_content = f"{email.subject or ''}\n{email.body or ''}".lower()
+            is_spam_by_keyword = _contains_any(text_content, SPAM_KEYWORDS)
+            is_spam_by_domain = _domain(email.sender) in SPAM_DOMAINS
+
             if email.category == "Spam":
                 agent_skipped = True
                 skip_reason = "Email classified as Spam"
+            elif is_spam_by_keyword:
+                agent_skipped = True
+                skip_reason = "Email contains spam keywords (blocklisted)"
+            elif is_spam_by_domain:
+                agent_skipped = True
+                skip_reason = "Email sender domain is blocklisted"
+
+            run_agent_decision = "Skipped" if agent_skipped else "Executed"
+            log_payload = {
+                "email_id": str(email.id),
+                "classification": email.category,
+                "confidence": email.confidence,
+                "requires_human": email.requires_human,
+                "run_agent_decision": run_agent_decision,
+                "skip_reason": skip_reason,
+            }
+            logger.info("Structured agent execution log: %s", json.dumps(log_payload))
+            print(f"STRUCTURED_LOG: {json.dumps(log_payload)}", flush=True)
 
             if agent_skipped:
                 email.raw_entities["AGENT_EXECUTION_STATUS"] = "Skipped"

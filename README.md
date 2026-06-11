@@ -1,12 +1,14 @@
 # SenAI Agentic CRM Intelligence Platform
 
-A production-grade, AI-powered Customer Relationship Management (CRM) platform that autonomously monitors a high-volume email inbox, triages messages using multi-dimensional intelligence (heuristics, RAG, LLMs), runs an autonomous ReAct triage agent, scrapes public reputation sentiment (G2 & Trustpilot), and displays insights on a live dashboard.
+A production-grade, AI-driven Customer Relationship Management (CRM) portal designed to manage high-volume inbox triage. SenAI intercepts incoming emails, parses customer metadata, classifies urgencies, and initiates autonomous **ReAct Triage Agents** via LangGraph. 
+
+Equipped with model-resilient fallbacks (Groq Llama-3.1 + Gemini-3.1), pgvector semantic search (RAG), and public sentiment scraping, SenAI automates support tasks while preserving absolute human oversight through a sleek, modern SaaS dashboard.
 
 ---
 
 ## 🏗️ Architecture & Data Flow
 
-The following Mermaid diagram outlines the complete system flow from ingestion to classification, tool utilization, database persistence, and dashboard updates.
+The diagram below outlines the system pipeline from the moment an email is received to autonomous agent triage, database storage, and real-time dashboard notifications.
 
 ```mermaid
 flowchart TB
@@ -19,16 +21,15 @@ flowchart TB
     end
 
     subgraph Intelligence ["2. Multi-Layer Triage & RAG"]
-        F -->|Spam / Internal| G[Spam Bin / Internal Inbox]
-        F -->|Security Threat| H[Security Queue - Immediate Escalate]
+        F -->|Spam / Blocklisted| G[Spam Bin - Agent Skipped]
         F -->|Standard Email| I[RAG Cosine Similarity Search]
         I <-->|Retrieve Top-3 Chunks| J[(Supabase pgvector DB)]
         I --> K[LLM Classification Engine]
     end
 
     subgraph Agent ["3. Autonomous ReAct Agent Loop"]
-        K -->|Confidence < 0.70 or Critical| L[Human Review Escalation Queue]
-        K -->|Confidence >= 0.70| M[ReAct Autonomous Agent Loop]
+        K -->|Requires Human Review| L[Human Review Queue]
+        K -->|Auto-Processable| M[ReAct Autonomous Agent Loop]
         M --> N{Action / Tool Selection}
         N -->|Tool 1| O[search_knowledge_base]
         N -->|Tool 2| P[get_thread_history]
@@ -38,131 +39,121 @@ flowchart TB
         N -->|Tool 6| T[flag_for_legal]
         N -->|Tool 7| U[create_internal_ticket]
         N -->|Tool 8| V[scrape_public_sentiment]
-        V --> W{Cache Valid?}
-        W -->|Yes| X[Return Cached]
-        W -->|No| Y[robots.txt Compliance Check -> Live Scrape]
-        Y --> Z[(Web Cache)]
     end
 
     subgraph Dashboard ["4. Real-time Dashboard & Actions"]
         M -->|Agent Decision| AA[(PostgreSQL)]
-        AA -->|WebSocket / polling| AB[Mission Control Inbox]
-        AA -->|WebSocket / polling| AC[Thread Detail Workspace]
-        AA -->|WebSocket / polling| AD[Analytics & SVG Charts]
-        AB -->|Review & Approve Drafts| AE[Triage Staff Review]
-        AE -->|Approve & Send| AF[Send Auto-Reply]
+        AA -->|WebSocket/Polling| AB[Triage Inbox Panel]
+        AA -->|WebSocket/Polling| AC[Workspace Detail View]
+        AA -->|WebSocket/Polling| AD[Analytics Charts & Heatmaps]
+        AB -->|Review & Edit Drafts| AE[Triage Staff Portal]
+        AE -->|Approve & Send| AF[Dispatch Reply]
     end
 ```
+
+---
+
+## ✨ Key Features & Enhancements
+
+*   **100% ReAct Agent Coverage**: Every valid inbox email is routed through the LangGraph ReAct agent loops. Only verified spam or blocklisted domains are filtered out.
+*   **Dual-Model Resiliency**: Utilizes Groq (`llama-3.1-8b-instant`) as the core agent engine with an instant fallback to Google Gemini (`gemini-3.1-flash-lite`) on rate limits (429 errors).
+*   **Modern Light-Theme UI**: A professional SaaS interface featuring:
+    *   Clean white containers, soft gray borders, and generous workspace padding.
+    *   Color-standardized urgency badges:
+        *   🔴 **Critical**: Soft Red (`bg-red-50 text-red-700`)
+        *   🟠 **High**: Orange (`bg-orange-50 text-orange-700`)
+        *   🟡 **Medium**: Amber (`bg-amber-50 text-amber-700`)
+        *   🔵 **Low**: Blue (`bg-blue-50 text-blue-700`)
+    *   Softer sentiment markers and highlighted inline email entities (prices, tickets, policy filenames).
+*   **Analytics Workspace**: Modern KPI summary cards, SVG sentiment timeline tracking, category distribution graphs, and a day-of-week response time heatmap.
+*   **RAG Knowledge Base**: A vector-search debugger panel to run semantic checks against seeded markdown policy files.
 
 ---
 
 ## 🛠️ Technology Stack
 
-*   **Backend**: Python (FastAPI) + Uvicorn + SQLAlchemy (Async) + Alembic
-*   **Database & Vector Store**: Supabase PostgreSQL with `pgvector` extension
-*   **AI Integration**: Groq (Llama-3.3-70B-Versatile) + SentenceTransformers (`all-MiniLM-L6-v2`)
+*   **Backend**: Python (FastAPI) + SQLAlchemy (Async) + Alembic + Uvicorn
+*   **Database & Vector Store**: Supabase PostgreSQL with the `pgvector` extension
+*   **AI Integration**: Groq API + Google GenAI SDK + SentenceTransformers (`all-MiniLM-L6-v2`)
 *   **Frontend**: React (Vite) + TypeScript + Tailwind CSS v4 + Lucide Icons + custom SVG metrics charts
-*   **Real-time Services**: Native WebSockets (`/ws`) for instant triage notification
 
 ---
 
-## ⚙️ Environment Variables
+## ⚙️ Configuration (.env)
 
-The backend loads configuration from `backend/.env`. Below is the complete template of environment variables:
+Create a configuration file at `backend/.env` containing the following values:
 
-| Variable | Description | Default Value / Example |
-| :--- | :--- | :--- |
-| `DATABASE_URL` | PostgreSQL connection string (must support pgvector) | `postgresql+asyncpg://...` (Supabase pooler URL) |
-| `GROQ_API_KEY` | API key to access Groq LLM inference services | `gsk_...` |
-| `LLM_MODEL` | LLM model name used for agent decisions & templates | `llama-3.3-70b-versatile` |
-| `EMBEDDING_MODEL` | Local SentenceTransformers model name for RAG | `all-MiniLM-L6-v2` |
-| `EMBEDDING_DIMENSION` | Dimensionality of embeddings generated by the model | `384` |
-| `KNOWLEDGE_BASE_DIR` | Directory containing policy markdown files to seed | `../../knowledge_base` |
-| `EMAIL_DATA_FILE` | Filename containing raw emails for simulation | `email-data-advanced.json` |
-| `SCRAPE_CACHE_TTL_HOURS` | Lifetime of reputation scraper records inside DB cache | `6` |
-| `SCRAPE_TIMEOUT_SECONDS`| Scraping client timeout in seconds | `10` |
-| `PORT` | API server listen port | `8000` |
-| `FRONTEND_URL` | Host address of React client to allow CORS requests | `http://localhost:3000` or `http://localhost:5173` |
-| `SIMULATION_SPEED` | Default streaming speed for simulator (emails/sec) | `1.0` |
+```ini
+DATABASE_URL=postgresql+asyncpg://<username>:<password>@<host>/<database>
+GROQ_API_KEY=gsk_...
+GEMINI_API_KEY=AIzaSy...
+LLM_MODEL=llama-3.1-8b-instant
+EMBEDDING_MODEL=all-MiniLM-L6-v2
+EMBEDDING_DIMENSION=384
+KNOWLEDGE_BASE_DIR=../../knowledge_base
+EMAIL_DATA_FILE=email-data-advanced.json
+PORT=8000
+FRONTEND_URL=http://localhost:5173
+```
 
 ---
 
-## 🚀 Step-by-Step Setup Guide
+## 🚀 Quick Start Guide
 
 ### Prerequisites
 *   Python 3.11+
-*   Node.js 18+ & npm
-*   A running PostgreSQL database with the `pgvector` extension installed.
+*   Node.js 18+ and npm
+*   A running PostgreSQL database with the `pgvector` extension.
 
-### 1. Set Up the Database Schema
-1.  Navigate to the `backend` directory:
+---
+
+### Step 1: Set Up the Backend
+1.  Navigate to the backend directory and set up your virtual environment:
     ```bash
     cd backend
-    ```
-2.  Make sure your virtual environment is active and dependencies are installed:
-    ```bash
-    uv venv
+    python -m venv .venv
+    # Windows:
     .venv\Scripts\activate
+    # macOS/Linux:
+    source .venv/bin/activate
+    ```
+2.  Install dependencies:
+    ```bash
     pip install -r requirements.txt
     ```
-3.  Apply DB migrations:
+3.  Apply database migrations to build the schema:
     ```bash
     alembic upgrade head
     ```
 
-### 2. Seed the Knowledge Base
-Seed the pgvector store with vector embeddings derived from the policy files inside the `knowledge_base` directory:
+---
+
+### Step 2: Seed Vector Embeddings
+Index the policy files inside the `knowledge_base/` folder into Supabase pgvector:
 ```bash
-python -m scripts.seed_kb
+$env:PYTHONPATH="." # On Windows Powershell
+python scripts/seed_kb.py
 ```
 
-### 3. Start the Backend API Server
-Start the Uvicorn server on port 8000:
-```bash
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
-```
-Interactive documentation is now live at: **[http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)**.
+---
 
-### 4. Run the Email Simulator
-In a separate terminal window, navigate to the `backend/` directory and run:
-```bash
-python -m scripts.simulate_emails --speed 2.0
-```
-This replays the `email-data-advanced.json` dataset chronologically and streams the emails into the platform.
+### Step 3: Run the Services
+1.  **Launch Backend**: Run the FastAPI server on port 8000:
+    ```bash
+    python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+    ```
+    *API documentation will be accessible at: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)*.
 
-### 5. Run the React Frontend Dashboard
-1.  Open a new terminal and navigate to the `frontend/` directory:
+2.  **Launch Frontend**: In a new terminal, run:
     ```bash
     cd frontend
-    ```
-2.  Install packages:
-    ```bash
     npm install
-    ```
-3.  Launch the development server:
-    ```bash
     npm run dev
     ```
-4.  Open the web interface at: **[http://localhost:5173](http://localhost:5173)**.
+    *Access the CRM interface at: [http://localhost:5173](http://localhost:5173)*.
 
----
-
-## ⚙️ Design & Architectural Decisions
-
-### 1. Multi-Layer Intelligence Engine
-*   **Layer 1 (Heuristic pre-filter)**: Runs instantly (<10ms) synchronously. It checks domains, blocklists, and immediate security flags (ransomware, outages) to prevent slow API response times or auto-replying to attackers.
-*   **Layer 2 (LLM Classifier + RAG)**: Queries the vector DB using `all-MiniLM-L6-v2` for semantic context and appends policies directly inside the LLM prompt. If confidence drops below `0.70`, the email is routed to the human queue.
-*   **Layer 3 (Sentiment deterioration tracking)**: Keeps a rolling calculation of a contact's last emails. If 3 consecutive emails fall below `-0.3`, it increments the churn risk by `+0.2` and broadcasts a real-time warning.
-
-### 2. ReAct Autonomous Agent Pattern
-The agent uses a step-by-step reasoning cycle (Thought -> Action -> Observation -> Next) capped at `6` steps. If unresolved by then, it auto-escalates to human. It has access to 8 tools ranging from CRM lookups to active web reputation scraping.
-
-### 3. Caching and robots.txt Compliance for Scraping
-Scraping public ratings (G2, Trustpilot) runs asynchronously. It first checks `robots.txt` using a non-blocking threadpool parser, and caches successful scrapes for 6 hours to prevent rate limits or blocking.
-
----
-
-## ⚠️ Known Limitations & Assumptions
-1.  **Mock Scraper**: Since G2 and Trustpilot have active anti-bot systems, the live scraping module fetches review counts and ratings using JSON-LD metadata and regex. If anti-bot blocks the request, it degrades gracefully and falls back to mock stats without throwing errors.
-2.  **Local Embeddings**: The system uses `all-MiniLM-L6-v2` locally to generate embeddings instead of paying for OpenAI's endpoint, providing fast, cost-effective vector search.
-3.  **Vector Search Indexing**: For small datasets (such as our 79 chunks knowledge base), a pgvector `ivfflat` index can contain empty lists when built prior to insertion or when data volume is small, causing vector queries to return empty sets. To ensure absolute query precision, we commented out the `ivfflat` index from migrations and schema. This forces PostgreSQL to perform a sequential scan, which executes in <5ms (well within the <200ms requirement) and guarantees exact similarity search results.
+3.  **Stream Emails (Simulation)**: Stream the 60 email simulation dataset into the pipeline:
+    ```bash
+    cd backend
+    python scripts/simulate_emails.py --speed 5.0
+    ```
