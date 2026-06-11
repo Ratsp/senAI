@@ -1,67 +1,111 @@
 import asyncio
+import uuid
 from datetime import datetime, timezone
 from httpx import AsyncClient
-from sqlalchemy import func, select
+from sqlalchemy import text
 
 from app.main import app
 from app.database import get_db_session
-from app.models import Action, Contact, Email, Thread
 
 
 async def main() -> None:
     print("Starting Phase 4 API Validation...")
 
     async with get_db_session() as db:
-        # 0. Set up database context for testing
-        contact = await db.scalar(select(Contact).where(Contact.email == "bob.jones@enterprise.net"))
+        # 0. Set up database context for testing using raw SQL queries
+        contact_res = await db.execute(
+            text("SELECT id, email FROM contacts WHERE email = 'bob.jones@enterprise.net'")
+        )
+        contact = contact_res.fetchone()
         if not contact:
-            contact = Contact(
-                email="bob.jones@enterprise.net",
-                name="Bob Jones",
-                company="Enterprise Net",
-                status="VIP",
-                account_value=150000.0,
-                churn_risk_score=0.85,
+            contact_id = uuid.uuid4()
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO contacts (id, email, name, company, status, account_value, churn_risk_score, created_at, last_contact_at)
+                    VALUES (:id, 'bob.jones@enterprise.net', 'Bob Jones', 'Enterprise Net', 'VIP', 150000.0, 0.85, :now, :now)
+                    """
+                ),
+                {"id": contact_id, "now": datetime.now(timezone.utc)},
             )
-            db.add(contact)
-            await db.flush()
+            contact_res = await db.execute(
+                text("SELECT id, email FROM contacts WHERE email = 'bob.jones@enterprise.net'")
+            )
+            contact = contact_res.fetchone()
 
-        thread = await db.scalar(select(Thread).where(Thread.thread_id == "thread_test_api"))
+        thread_res = await db.execute(
+            text("SELECT id, thread_id FROM threads WHERE thread_id = 'thread_test_api'")
+        )
+        thread = thread_res.fetchone()
         if not thread:
-            thread = Thread(
-                thread_id="thread_test_api",
-                subject="API testing thread",
-                sender_email=contact.email,
+            thread_id = uuid.uuid4()
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO threads (id, thread_id, subject, sender_email, first_seen_at, last_updated_at, status, assigned_to)
+                    VALUES (:id, 'thread_test_api', 'API testing thread', :email, :now, :now, 'Open', NULL)
+                    """
+                ),
+                {
+                    "id": thread_id,
+                    "email": contact.email,
+                    "now": datetime.now(timezone.utc),
+                },
             )
-            db.add(thread)
-            await db.flush()
+            thread_res = await db.execute(
+                text("SELECT id, thread_id FROM threads WHERE thread_id = 'thread_test_api'")
+            )
+            thread = thread_res.fetchone()
 
-        email = await db.scalar(select(Email).where(Email.message_id == "msg_test_api"))
+        email_res = await db.execute(
+            text("SELECT id, message_id FROM emails WHERE message_id = 'msg_test_api'")
+        )
+        email = email_res.fetchone()
         if not email:
-            email = Email(
-                thread_id=thread.id,
-                message_id="msg_test_api",
-                sender=contact.email,
-                subject="API testing thread",
-                body="Hello, I need assistance with SLA breach and custom billing options.",
-                timestamp=datetime.now(timezone.utc),
-                category="Inquiry",
-                urgency="Medium",
-                status="Received",
+            email_uuid = uuid.uuid4()
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO emails (id, thread_id, message_id, sender, subject, body, timestamp, category, urgency, status)
+                    VALUES (:id, :thread_id, 'msg_test_api', :sender, 'API testing thread', 'Hello, I need assistance with SLA breach and custom billing options.', :now, 'Inquiry', 'Medium', 'Received')
+                    """
+                ),
+                {
+                    "id": email_uuid,
+                    "thread_id": thread.id,
+                    "sender": contact.email,
+                    "now": datetime.now(timezone.utc),
+                },
             )
-            db.add(email)
-            await db.flush()
+            email_res = await db.execute(
+                text("SELECT id, message_id FROM emails WHERE message_id = 'msg_test_api'")
+            )
+            email = email_res.fetchone()
 
-        action = await db.scalar(select(Action).where(Action.email_id == email.id))
+        action_res = await db.execute(
+            text("SELECT id FROM actions WHERE email_id = :email_id"),
+            {"email_id": email.id},
+        )
+        action = action_res.fetchone()
         if not action:
-            action = Action(
-                email_id=email.id,
-                action_type="Auto-Reply",
-                proposed_content="Draft reply content for testing.",
-                is_approved=False,
+            action_uuid = uuid.uuid4()
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO actions (id, email_id, action_type, proposed_content, is_approved, approved_by, executed_at)
+                    VALUES (:id, :email_id, 'Auto-Reply', 'Draft reply content for testing.', FALSE, NULL, NULL)
+                    """
+                ),
+                {
+                    "id": action_uuid,
+                    "email_id": email.id,
+                },
             )
-            db.add(action)
-            await db.flush()
+            action_res = await db.execute(
+                text("SELECT id FROM actions WHERE email_id = :email_id"),
+                {"email_id": email.id},
+            )
+            action = action_res.fetchone()
 
         await db.commit()
 
@@ -74,12 +118,14 @@ async def main() -> None:
     from sentence_transformers import SentenceTransformer
     from app.config import settings
     from app.websocket import ConnectionManager
+
     app.state.embedder = SentenceTransformer(settings.embedding_model)
     app.state.ws_manager = ConnectionManager()
     app.state.jobs = {}
 
     import httpx
-    async with AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+
+    async with AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test", headers={"X-API-Key": "senai_secure_api_key"}) as client:
         # 1. Health
         print("\nTesting GET /health...")
         res = await client.get("/health")
@@ -141,6 +187,24 @@ async def main() -> None:
         assert res.status_code == 200, f"Failed breakdown: {res.text}"
         print("GET /analytics/category-breakdown Success:", res.json())
 
+        # 8a. Heatmap
+        print("\nTesting GET /analytics/heatmap...")
+        res = await client.get("/analytics/heatmap")
+        assert res.status_code == 200, f"Failed heatmap: {res.text}"
+        print("GET /analytics/heatmap Success:", res.json())
+
+        # 8b. Escalations
+        print("\nTesting GET /analytics/escalations...")
+        res = await client.get("/analytics/escalations")
+        assert res.status_code == 200, f"Failed escalations: {res.text}"
+        print("GET /analytics/escalations Success:", res.json())
+
+        # 8c. At-Risk Contacts
+        print("\nTesting GET /analytics/at-risk-contacts...")
+        res = await client.get("/analytics/at-risk-contacts")
+        assert res.status_code == 200, f"Failed at-risk-contacts: {res.text}"
+        print("GET /analytics/at-risk-contacts Success:", res.json())
+
         # 9. RAG Search
         print("\nTesting GET /rag/search...")
         res = await client.get("/rag/search?q=SLA credit policy downtime")
@@ -159,7 +223,8 @@ async def main() -> None:
         # Check initial action count for this email
         async with get_db_session() as db2:
             initial_count = await db2.scalar(
-                select(func.count(Action.id)).where(Action.email_id == email.id)
+                text("SELECT COUNT(*) FROM actions WHERE email_id = :email_id"),
+                {"email_id": email.id},
             )
 
         res = await client.post(f"/agent/dry-run/{email_id}")
@@ -169,9 +234,12 @@ async def main() -> None:
         # Check action count after dry run (should be unchanged)
         async with get_db_session() as db2:
             final_count = await db2.scalar(
-                select(func.count(Action.id)).where(Action.email_id == email.id)
+                text("SELECT COUNT(*) FROM actions WHERE email_id = :email_id"),
+                {"email_id": email.id},
             )
-        assert initial_count == final_count, f"Dry-run persisted writes! Count before: {initial_count}, count after: {final_count}"
+        assert (
+            initial_count == final_count
+        ), f"Dry-run persisted writes! Count before: {initial_count}, count after: {final_count}"
         print("POST /agent/dry-run Success: Executed ReAct trace and rolled back cleanly.")
 
         # 12. Audit Logs
@@ -199,8 +267,19 @@ async def main() -> None:
         res = await client.get("/contacts/non_existent_email@test.com")
         assert res.status_code == 404, "Expected 404"
         err_data = res.json()
-        assert "error_code" in err_data and "message" in err_data and "details" in err_data, "Error response does not match the envelope specifications"
+        assert (
+            "error_code" in err_data and "message" in err_data and "details" in err_data
+        ), "Error response does not match the envelope specifications"
         print("Error Envelope verification Success:", err_data)
+
+        # 16. API Key Authentication checks (Unauthorized access)
+        print("\nTesting API Key Authentication (Unauthorized)...")
+        async with AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as unauth_client:
+            res = await unauth_client.get("/contacts/bob.jones@enterprise.net")
+            assert res.status_code == 401, f"Expected 401, got {res.status_code}"
+            err_data = res.json()
+            assert err_data["error_code"] == "UNAUTHORIZED"
+            print("API Key Auth verification (Unauthorized) Success:", err_data)
 
     print("\nPhase 4 API Validation PASSED successfully!")
 

@@ -1,19 +1,19 @@
+import json
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
 
 from app.database import get_db
-from app.models import AuditLog
+from app.auth import verify_api_key
 
-router = APIRouter(prefix="/audit", tags=["audit"])
+router = APIRouter(prefix="/audit", tags=["audit"], dependencies=[Depends(verify_api_key)])
 
 
 @router.get("/{entity_type}/{entity_id}")
 async def get_entity_audit_logs(
     entity_type: str,
     entity_id: str,
-    db: AsyncSession = Depends(get_db),
+    db=Depends(get_db),
 ):
     try:
         entity_uuid = UUID(entity_id)
@@ -27,13 +27,18 @@ async def get_entity_audit_logs(
             },
         )
 
-    stmt = (
-        select(AuditLog)
-        .where(AuditLog.entity_type == entity_type, AuditLog.entity_id == entity_uuid)
-        .order_by(AuditLog.timestamp.desc())
+    result = await db.execute(
+        text(
+            """
+            SELECT id, entity_type, entity_id, action, performed_by, timestamp, diff
+            FROM audit_log
+            WHERE entity_type = :entity_type AND entity_id = :entity_id
+            ORDER BY timestamp DESC
+            """
+        ),
+        {"entity_type": entity_type, "entity_id": entity_uuid},
     )
-    result = await db.execute(stmt)
-    logs = result.scalars().all()
+    logs = result.fetchall()
 
     return [
         {
@@ -43,7 +48,8 @@ async def get_entity_audit_logs(
             "action": log.action,
             "performed_by": log.performed_by,
             "timestamp": log.timestamp.isoformat(),
-            "diff": log.diff,
+            "diff": json.loads(log.diff) if isinstance(log.diff, str) else log.diff,
         }
         for log in logs
     ]
+

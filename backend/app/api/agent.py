@@ -1,18 +1,18 @@
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.services.agent import run as run_agent
+from app.auth import verify_api_key
 
-router = APIRouter(prefix="/agent", tags=["agent"])
+router = APIRouter(prefix="/agent", tags=["agent"], dependencies=[Depends(verify_api_key)])
 
 
 @router.post("/dry-run/{email_id}")
 async def agent_dry_run(
     email_id: str,
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    db=Depends(get_db),
 ):
     try:
         UUID(email_id)

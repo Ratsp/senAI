@@ -45,7 +45,7 @@ async def main() -> None:
     async with httpx.AsyncClient(base_url=base_url, timeout=30.0) as client:
         for index, email in enumerate(sorted_emails, start=1):
             try:
-                response = await client.post("/api/ingest", json=email)
+                response = await client.post("/api/ingest", json=email, headers={"X-API-Key": settings.api_key})
                 if response.status_code == 409:
                     print(
                         f"[{index}/{total_emails}] msg_id: {email['message_id']:25} | "

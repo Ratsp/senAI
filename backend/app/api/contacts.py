@@ -1,20 +1,34 @@
+import json
+import uuid
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
 
 from app.database import get_db
-from app.models import Contact, Thread, Email, AuditLog
 from app.schemas import ContactStatusPayload
+from app.auth import verify_api_key
 
-router = APIRouter(prefix="/contacts", tags=["contacts"])
+router = APIRouter(prefix="/contacts", tags=["contacts"], dependencies=[Depends(verify_api_key)])
 
 
 @router.get("/{email}")
 async def get_contact_profile_endpoint(
     email: str,
-    db: AsyncSession = Depends(get_db),
+    db=Depends(get_db),
 ):
-    contact = await db.scalar(select(Contact).where(Contact.email == email))
+    contact = (
+        await db.execute(
+            text(
+                """
+                SELECT id, email, name, company, status, account_value, churn_risk_score, created_at, last_contact_at
+                FROM contacts WHERE email = :email
+                """
+            ),
+            {"email": email},
+        )
+    ).fetchone()
+
     if contact is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -26,17 +40,21 @@ async def get_contact_profile_endpoint(
         )
 
     open_threads = await db.scalar(
-        select(func.count(Thread.id))
-        .where(Thread.sender_email == email, Thread.status == "Open")
+        text("SELECT COUNT(id) FROM threads WHERE sender_email = :email AND status = 'Open'"),
+        {"email": email},
     )
 
     recent_emails_result = await db.execute(
-        select(Email)
-        .where(Email.sender == email)
-        .order_by(Email.timestamp.desc())
-        .limit(10)
+        text(
+            """
+            SELECT id, message_id, subject, timestamp, category, urgency, sentiment_score, status
+            FROM emails WHERE sender = :email
+            ORDER BY timestamp DESC LIMIT 10
+            """
+        ),
+        {"email": email},
     )
-    recent_emails = recent_emails_result.scalars().all()
+    recent_emails = recent_emails_result.fetchall()
 
     return {
         "contact": {
@@ -72,9 +90,15 @@ async def get_contact_profile_endpoint(
 async def update_contact_status(
     email: str,
     payload: ContactStatusPayload,
-    db: AsyncSession = Depends(get_db),
+    db=Depends(get_db),
 ):
-    contact = await db.scalar(select(Contact).where(Contact.email == email))
+    contact = (
+        await db.execute(
+            text("SELECT id, email, status FROM contacts WHERE email = :email"),
+            {"email": email},
+        )
+    ).fetchone()
+
     if contact is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -86,20 +110,34 @@ async def update_contact_status(
         )
 
     before = contact.status
-    contact.status = payload.status
-
-    audit = AuditLog(
-        entity_type="contact",
-        entity_id=contact.id,
-        action="status_updated",
-        performed_by="user",
-        diff={"before": before, "after": payload.status},
+    await db.execute(
+        text("UPDATE contacts SET status = :status WHERE email = :email"),
+        {"status": payload.status, "email": email},
     )
-    db.add(audit)
+
+    audit_id = uuid.uuid4()
+    await db.execute(
+        text(
+            """
+            INSERT INTO audit_log (id, entity_type, entity_id, action, performed_by, timestamp, diff)
+            VALUES (:id, :entity_type, :entity_id, :action, :performed_by, :timestamp, :diff)
+            """
+        ),
+        {
+            "id": audit_id,
+            "entity_type": "contact",
+            "entity_id": contact.id,
+            "action": "status_updated",
+            "performed_by": "user",
+            "timestamp": datetime.now(timezone.utc),
+            "diff": json.dumps({"before": before, "after": payload.status}),
+        },
+    )
     await db.commit()
 
     return {
         "ok": True,
         "email": contact.email,
-        "status": contact.status,
+        "status": payload.status,
     }
+

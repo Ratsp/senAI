@@ -1,10 +1,11 @@
+import json
+import uuid
 from datetime import datetime, timezone
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
 
 from app.database import get_db
-from app.models import Action, AuditLog, Email
 from app.schemas import DraftUpdatePayload
 
 router = APIRouter(prefix="/drafts", tags=["drafts"])
@@ -14,7 +15,7 @@ router = APIRouter(prefix="/drafts", tags=["drafts"])
 async def update_draft(
     id: str,
     payload: DraftUpdatePayload,
-    db: AsyncSession = Depends(get_db),
+    db=Depends(get_db),
 ):
     try:
         action_uuid = UUID(id)
@@ -28,7 +29,13 @@ async def update_draft(
             },
         )
 
-    action = await db.get(Action, action_uuid)
+    action = (
+        await db.execute(
+            text("SELECT id, proposed_content FROM actions WHERE id = :id"),
+            {"id": action_uuid},
+        )
+    ).fetchone()
+
     if action is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -40,22 +47,35 @@ async def update_draft(
         )
 
     before = action.proposed_content
-    action.proposed_content = payload.proposed_content
-
-    audit = AuditLog(
-        entity_type="action",
-        entity_id=action.id,
-        action="draft_updated",
-        performed_by="user",
-        diff={"before": before, "after": payload.proposed_content},
+    await db.execute(
+        text("UPDATE actions SET proposed_content = :proposed_content WHERE id = :id"),
+        {"proposed_content": payload.proposed_content, "id": action_uuid},
     )
-    db.add(audit)
+
+    audit_id = uuid.uuid4()
+    await db.execute(
+        text(
+            """
+            INSERT INTO audit_log (id, entity_type, entity_id, action, performed_by, timestamp, diff)
+            VALUES (:id, :entity_type, :entity_id, :action, :performed_by, :timestamp, :diff)
+            """
+        ),
+        {
+            "id": audit_id,
+            "entity_type": "action",
+            "entity_id": action.id,
+            "action": "draft_updated",
+            "performed_by": "user",
+            "timestamp": datetime.now(timezone.utc),
+            "diff": json.dumps({"before": before, "after": payload.proposed_content}),
+        },
+    )
     await db.commit()
 
     return {
         "ok": True,
         "id": str(action.id),
-        "proposed_content": action.proposed_content,
+        "proposed_content": payload.proposed_content,
     }
 
 
@@ -63,7 +83,7 @@ async def update_draft(
 async def approve_draft(
     id: str,
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    db=Depends(get_db),
 ):
     try:
         action_uuid = UUID(id)
@@ -77,7 +97,13 @@ async def approve_draft(
             },
         )
 
-    action = await db.get(Action, action_uuid)
+    action = (
+        await db.execute(
+            text("SELECT id, email_id FROM actions WHERE id = :id"),
+            {"id": action_uuid},
+        )
+    ).fetchone()
+
     if action is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -88,25 +114,43 @@ async def approve_draft(
             },
         )
 
-    action.is_approved = True
-    action.executed_at = datetime.now(timezone.utc)
-    action.approved_by = "user"
+    now = datetime.now(timezone.utc)
+    await db.execute(
+        text(
+            """
+            UPDATE actions
+            SET is_approved = TRUE, executed_at = :now, approved_by = 'user'
+            WHERE id = :id
+            """
+        ),
+        {"now": now, "id": action_uuid},
+    )
 
     email_uuid = action.email_id
-    email = None
     if email_uuid:
-        email = await db.get(Email, email_uuid)
-        if email:
-            email.status = "Replied"
+        await db.execute(
+            text("UPDATE emails SET status = 'Replied' WHERE id = :email_id"),
+            {"email_id": email_uuid},
+        )
 
-    audit = AuditLog(
-        entity_type="action",
-        entity_id=action.id,
-        action="draft_approved",
-        performed_by="user",
-        diff={"email_id": str(email_uuid) if email_uuid else None},
+    audit_id = uuid.uuid4()
+    await db.execute(
+        text(
+            """
+            INSERT INTO audit_log (id, entity_type, entity_id, action, performed_by, timestamp, diff)
+            VALUES (:id, :entity_type, :entity_id, :action, :performed_by, :timestamp, :diff)
+            """
+        ),
+        {
+            "id": audit_id,
+            "entity_type": "action",
+            "entity_id": action.id,
+            "action": "draft_approved",
+            "performed_by": "user",
+            "timestamp": datetime.now(timezone.utc),
+            "diff": json.dumps({"email_id": str(email_uuid) if email_uuid else None}),
+        },
     )
-    db.add(audit)
     await db.commit()
 
     # Broadcast WebSocket event
@@ -127,3 +171,4 @@ async def approve_draft(
         "email_id": str(email_uuid) if email_uuid else None,
         "status": "Replied",
     }
+

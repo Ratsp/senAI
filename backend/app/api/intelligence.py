@@ -1,25 +1,30 @@
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
 
 from app.database import get_db
-from app.models import WebIntelligenceCache
 
 router = APIRouter(prefix="/intelligence", tags=["intelligence"])
 
 
 @router.get("/reputation")
-async def get_latest_reputation(db: AsyncSession = Depends(get_db)):
+async def get_latest_reputation(db=Depends(get_db)):
     now = datetime.now(timezone.utc)
-    cached = await db.scalar(
-        select(WebIntelligenceCache)
-        .where(WebIntelligenceCache.expires_at > now)
-        .order_by(WebIntelligenceCache.scraped_at.desc())
-        .limit(1)
+    res = await db.execute(
+        text(
+            """
+            SELECT scraped_data FROM web_intelligence_cache
+            WHERE expires_at > :now
+            ORDER BY scraped_at DESC
+            LIMIT 1
+            """
+        ),
+        {"now": now},
     )
+    row = res.fetchone()
 
-    if cached:
-        return cached.scraped_data
+    if row:
+        return row.scraped_data
 
     return {"message": "No reputation data available"}
+

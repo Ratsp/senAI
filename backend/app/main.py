@@ -24,9 +24,15 @@ from fastapi.exceptions import RequestValidationError
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from sentence_transformers import SentenceTransformer
-
-    app.state.embedder = SentenceTransformer(settings.embedding_model)
+    try:
+        from sentence_transformers import SentenceTransformer
+        app.state.embedder = SentenceTransformer(settings.embedding_model)
+    except Exception as exc:
+        print(f"Warning: Failed to load SentenceTransformer during startup: {exc}. Using DummyEmbedder fallback.")
+        class DummyEmbedder:
+            def encode(self, text: str):
+                return [0.0] * 384
+        app.state.embedder = DummyEmbedder()
     app.state.jobs = {}
     app.state.ws_manager = ConnectionManager()
     yield

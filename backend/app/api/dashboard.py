@@ -1,22 +1,24 @@
 from fastapi import APIRouter, Depends
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
 
 from app.database import get_db
-from app.models import Email
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 
 @router.get("/stats")
-async def get_dashboard_stats(db: AsyncSession = Depends(get_db)):
-    stmt = select(
-        func.count().filter(Email.status.in_(["Received", "Processing"])).label("pending"),
-        func.count().filter(Email.status == "Replied").label("replied"),
-        func.count().filter(Email.status == "Escalated").label("escalated"),
-        func.count().filter(Email.urgency == "Critical").label("critical"),
-        func.count().filter(Email.category == "Spam").label("spam_filtered"),
-        func.count().label("total"),
+async def get_dashboard_stats(db=Depends(get_db)):
+    stmt = text(
+        """
+        SELECT
+            COUNT(*) FILTER (WHERE status IN ('Received', 'Processing')) AS pending,
+            COUNT(*) FILTER (WHERE status = 'Replied') AS replied,
+            COUNT(*) FILTER (WHERE status = 'Escalated') AS escalated,
+            COUNT(*) FILTER (WHERE urgency = 'Critical') AS critical,
+            COUNT(*) FILTER (WHERE category = 'Spam') AS spam_filtered,
+            COUNT(*) AS total
+        FROM emails
+        """
     )
     result = await db.execute(stmt)
     row = result.fetchone()
@@ -29,3 +31,4 @@ async def get_dashboard_stats(db: AsyncSession = Depends(get_db)):
         "spam_filtered": row.spam_filtered or 0,
         "total": row.total or 0,
     }
+

@@ -1,27 +1,25 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any
-
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.models import Email
+from sqlalchemy import text
 
 
-async def get_sentiment_trend(sender_email: str, db: AsyncSession, days: int = 30) -> dict[str, Any]:
+async def get_sentiment_trend(sender_email: str, db, days: int = 30) -> dict[str, Any]:
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     result = await db.execute(
-        select(Email.timestamp, Email.sentiment_score)
-        .where(
-            Email.sender == sender_email,
-            Email.timestamp >= cutoff,
-            Email.sentiment_score.is_not(None),
-        )
-        .order_by(Email.timestamp.asc())
+        text(
+            """
+            SELECT timestamp, sentiment_score FROM emails
+            WHERE sender = :sender AND timestamp >= :cutoff AND sentiment_score IS NOT NULL
+            ORDER BY timestamp ASC
+            """
+        ),
+        {"sender": sender_email, "cutoff": cutoff},
     )
+    rows = result.fetchall()
     data_points = [
-        {"timestamp": timestamp.isoformat(), "score": float(score)}
-        for timestamp, score in result.all()
-        if score is not None
+        {"timestamp": row.timestamp.isoformat(), "score": float(row.sentiment_score)}
+        for row in rows
+        if row.sentiment_score is not None
     ]
     last_scores = [point["score"] for point in data_points[-5:]]
     moving_average = sum(last_scores) / len(last_scores) if last_scores else None
@@ -33,23 +31,38 @@ async def get_sentiment_trend(sender_email: str, db: AsyncSession, days: int = 3
     }
 
 
-async def detect_deterioration(sender_email: str, db: AsyncSession) -> bool:
+from app.config import settings
+
+async def detect_deterioration(sender_email: str, db) -> bool:
+    limit = settings.sentiment_consecutive_count
+    threshold = settings.sentiment_threshold
     result = await db.execute(
-        select(Email.sentiment_score)
-        .where(Email.sender == sender_email, Email.sentiment_score.is_not(None))
-        .order_by(Email.timestamp.desc())
-        .limit(3)
+        text(
+            f"""
+            SELECT sentiment_score FROM emails
+            WHERE sender = :sender AND sentiment_score IS NOT NULL
+            ORDER BY timestamp DESC
+            LIMIT {limit}
+            """
+        ),
+        {"sender": sender_email},
     )
-    scores = [float(score) for score in result.scalars().all()]
-    return len(scores) == 3 and all(score < -0.3 for score in scores)
+    scores = [float(row.sentiment_score) for row in result.fetchall() if row.sentiment_score is not None]
+    return len(scores) == limit and all(score < threshold for score in scores)
 
 
-async def compute_moving_average(sender_email: str, db: AsyncSession, window: int = 5) -> float | None:
+async def compute_moving_average(sender_email: str, db, window: int = 5) -> float | None:
     result = await db.execute(
-        select(Email.sentiment_score)
-        .where(Email.sender == sender_email, Email.sentiment_score.is_not(None))
-        .order_by(Email.timestamp.desc())
-        .limit(window)
+        text(
+            """
+            SELECT sentiment_score FROM emails
+            WHERE sender = :sender AND sentiment_score IS NOT NULL
+            ORDER BY timestamp DESC
+            LIMIT :window
+            """
+        ),
+        {"sender": sender_email, "window": window},
     )
-    scores = [float(score) for score in result.scalars().all()]
+    scores = [float(row.sentiment_score) for row in result.fetchall() if row.sentiment_score is not None]
     return sum(scores) / len(scores) if scores else None
+

@@ -1,10 +1,11 @@
+import json
+import uuid
 from datetime import datetime, timezone
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
 
 from app.database import get_db
-from app.models import Action, AuditLog, Email
 from app.schemas import RespondPayload
 from app.services.agent_tools import escalate_to_human
 
@@ -16,7 +17,7 @@ async def respond_to_email(
     email_id: str,
     payload: RespondPayload,
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    db=Depends(get_db),
 ):
     # Try converting email_id to UUID to confirm format
     try:
@@ -31,7 +32,13 @@ async def respond_to_email(
             },
         )
 
-    email = await db.get(Email, email_uuid)
+    email = (
+        await db.execute(
+            text("SELECT id, status FROM emails WHERE id = :id"),
+            {"id": email_uuid},
+        )
+    ).fetchone()
+
     if email is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -74,26 +81,43 @@ async def respond_to_email(
         return res
     else:
         # Create approved Action
-        action = Action(
-            email_id=email.id,
-            action_type="Auto-Reply",
-            proposed_content=payload.reply_text,
-            is_approved=True,
-            approved_by="user",
-            executed_at=datetime.now(timezone.utc),
+        action_id = uuid.uuid4()
+        now = datetime.now(timezone.utc)
+        await db.execute(
+            text(
+                """
+                INSERT INTO actions (id, email_id, action_type, proposed_content, is_approved, approved_by, executed_at)
+                VALUES (:id, :email_id, 'Auto-Reply', :reply_text, TRUE, 'user', :executed_at)
+                """
+            ),
+            {
+                "id": action_id,
+                "email_id": email.id,
+                "reply_text": payload.reply_text,
+                "executed_at": now,
+            },
         )
-        db.add(action)
 
-        email.status = "Replied"
-
-        audit = AuditLog(
-            entity_type="email",
-            entity_id=email.id,
-            action="manual_reply_sent",
-            performed_by="user",
-            diff={"reply_text": payload.reply_text},
+        await db.execute(
+            text("UPDATE emails SET status = 'Replied' WHERE id = :id"),
+            {"id": email.id},
         )
-        db.add(audit)
+
+        audit_id = uuid.uuid4()
+        await db.execute(
+            text(
+                """
+                INSERT INTO audit_log (id, entity_type, entity_id, action, performed_by, timestamp, diff)
+                VALUES (:id, 'email', :entity_id, 'manual_reply_sent', 'user', :timestamp, :diff)
+                """
+            ),
+            {
+                "id": audit_id,
+                "entity_id": email.id,
+                "timestamp": now,
+                "diff": json.dumps({"reply_text": payload.reply_text}),
+            },
+        )
 
         await db.commit()
 
@@ -112,6 +136,7 @@ async def respond_to_email(
         return {
             "ok": True,
             "email_id": str(email.id),
-            "action_id": str(action.id),
+            "action_id": str(action_id),
             "status": "Replied",
         }
+

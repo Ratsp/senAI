@@ -1,3 +1,5 @@
+import json
+import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
@@ -6,27 +8,32 @@ from uuid import UUID
 import httpx
 from bs4 import BeautifulSoup
 from groq import AsyncGroq
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
 
 from app.config import settings
-from app.models import Action, AuditLog, Contact, Email, Thread, WebIntelligenceCache
 from app.services.rag_pipeline import retrieve_relevant_chunks
 from app.services.web_scraper import scrape_trustpilot, scrape_g2
+from app.services.llm_classifier import chat_with_retry
 
 
-async def search_knowledge_base(query: str, db: AsyncSession, embedder: Any) -> dict[str, Any]:
+async def search_knowledge_base(query: str, db, embedder: Any) -> dict[str, Any]:
     chunks = await retrieve_relevant_chunks(query, embedder, db, top_k=3)
     return {"query": query, "chunks": chunks}
 
 
-async def get_thread_history(sender_email: str, db: AsyncSession) -> dict[str, Any]:
+async def get_thread_history(sender_email: str, db) -> dict[str, Any]:
     result = await db.execute(
-        select(Email)
-        .where(Email.sender == sender_email)
-        .order_by(Email.timestamp.asc())
+        text(
+            """
+            SELECT id, message_id, thread_id, subject, body, timestamp, category, urgency, sentiment_score, requires_human, confidence, status
+            FROM emails
+            WHERE sender = :sender
+            ORDER BY timestamp ASC
+            """
+        ),
+        {"sender": sender_email},
     )
-    emails = result.scalars().all()
+    emails = result.fetchall()
     return {
         "sender_email": sender_email,
         "emails": [
@@ -49,11 +56,21 @@ async def get_thread_history(sender_email: str, db: AsyncSession) -> dict[str, A
     }
 
 
-async def get_contact_profile(email: str, db: AsyncSession) -> dict[str, Any]:
-    contact = await db.scalar(select(Contact).where(Contact.email == email))
+async def get_contact_profile(email: str, db) -> dict[str, Any]:
+    contact = (
+        await db.execute(
+            text(
+                "SELECT id, email, name, company, status, account_value, churn_risk_score, last_contact_at FROM contacts WHERE email = :email"
+            ),
+            {"email": email},
+        )
+    ).fetchone()
+
     open_thread_count = await db.scalar(
-        select(func.count(Thread.id)).where(Thread.sender_email == email, Thread.status == "Open")
+        text("SELECT COUNT(id) FROM threads WHERE sender_email = :email AND status = 'Open'"),
+        {"email": email},
     )
+
     if contact is None:
         return {
             "email": email,
@@ -78,8 +95,14 @@ async def get_contact_profile(email: str, db: AsyncSession) -> dict[str, Any]:
     }
 
 
-async def check_account_status(email: str, db: AsyncSession) -> dict[str, Any]:
-    contact = await db.scalar(select(Contact).where(Contact.email == email))
+async def check_account_status(email: str, db) -> dict[str, Any]:
+    contact = (
+        await db.execute(
+            text("SELECT status, account_value FROM contacts WHERE email = :email"),
+            {"email": email},
+        )
+    ).fetchone()
+
     account_value = Decimal(contact.account_value or 0) if contact else Decimal("0")
     if account_value > Decimal("100000"):
         tier = "Enterprise"
@@ -103,12 +126,13 @@ async def check_account_status(email: str, db: AsyncSession) -> dict[str, Any]:
     }
 
 
-async def draft_reply(context: str, tone: str, policy_refs: list[str], db: AsyncSession) -> dict[str, Any]:
+async def draft_reply(context: str, tone: str, policy_refs: list[str], db) -> dict[str, Any]:
     try:
         if not settings.groq_api_key or settings.groq_api_key == "your_groq_key":
             raise ValueError("Groq API key is not configured")
         client = AsyncGroq(api_key=settings.groq_api_key)
-        response = await client.chat.completions.create(
+        response = await chat_with_retry(
+            client,
             model=settings.llm_model,
             messages=[
                 {
@@ -134,63 +158,100 @@ async def draft_reply(context: str, tone: str, policy_refs: list[str], db: Async
     return {"draft_text": draft, "policy_refs_used": policy_refs, "fallback": False}
 
 
-async def escalate_to_human(email_id: str, reason: str, priority: str, db: AsyncSession) -> dict[str, Any]:
-    email = await db.get(Email, _uuid(email_id))
+async def escalate_to_human(email_id: str, reason: str, priority: str, db) -> dict[str, Any]:
+    email = (
+        await db.execute(
+            text("SELECT id FROM emails WHERE id = :id"),
+            {"id": _uuid(email_id)},
+        )
+    ).fetchone()
     if email is None:
         return {"ok": False, "error": "Email not found", "email_id": email_id}
 
-    email.status = "Escalated"
-    action = Action(
-        email_id=email.id,
-        action_type="Escalate",
-        agent_reasoning_log={"reason": reason, "priority": priority},
-        proposed_content=None,
+    await db.execute(
+        text("UPDATE emails SET status = 'Escalated' WHERE id = :id"),
+        {"id": email.id},
     )
-    db.add(action)
-    await db.flush()
-    db.add(
-        AuditLog(
-            entity_type="email",
-            entity_id=email.id,
-            action="escalated_to_human",
-            performed_by="agent",
-            diff={"reason": reason, "priority": priority, "action_id": str(action.id)},
-        )
-    )
-    await db.commit()
-    return {"ok": True, "email_id": str(email.id), "action_id": str(action.id), "priority": priority, "reason": reason}
 
-
-async def create_internal_ticket(title: str, body: str, assignee: str, db: AsyncSession) -> dict[str, Any]:
-    action = Action(
-        email_id=None,
-        action_type="Ticket-Created",
-        proposed_content=body,
-        agent_reasoning_log={"title": title, "assignee": assignee},
+    action_id = uuid.uuid4()
+    await db.execute(
+        text(
+            """
+            INSERT INTO actions (id, email_id, action_type, agent_reasoning_log, proposed_content, is_approved, approved_by, executed_at)
+            VALUES (:id, :email_id, 'Escalate', :reasoning, NULL, FALSE, NULL, NULL)
+            """
+        ),
+        {
+            "id": action_id,
+            "email_id": email.id,
+            "reasoning": json.dumps({"reason": reason, "priority": priority}),
+        },
     )
-    db.add(action)
-    await db.flush()
-    db.add(
-        AuditLog(
-            entity_type="action",
-            entity_id=action.id,
-            action="internal_ticket_created",
-            performed_by="agent",
-            diff={"title": title, "assignee": assignee},
-        )
+
+    audit_id = uuid.uuid4()
+    await db.execute(
+        text(
+            """
+            INSERT INTO audit_log (id, entity_type, entity_id, action, performed_by, timestamp, diff)
+            VALUES (:id, 'email', :entity_id, 'escalated_to_human', 'agent', :timestamp, :diff)
+            """
+        ),
+        {
+            "id": audit_id,
+            "entity_id": email.id,
+            "timestamp": datetime.now(timezone.utc),
+            "diff": json.dumps({"reason": reason, "priority": priority, "action_id": str(action_id)}),
+        },
     )
     await db.commit()
-    return {"ok": True, "ticket_id": str(action.id), "title": title, "assignee": assignee}
+    return {"ok": True, "email_id": str(email.id), "action_id": str(action_id), "priority": priority, "reason": reason}
 
 
-async def scrape_public_sentiment(company_name: str, db: AsyncSession) -> dict[str, Any]:
+async def create_internal_ticket(title: str, body: str, assignee: str, db, email_id: str | None = None) -> dict[str, Any]:
+    action_id = uuid.uuid4()
+    email_uuid = _uuid(email_id) if email_id else None
+    await db.execute(
+        text(
+            """
+            INSERT INTO actions (id, email_id, action_type, proposed_content, agent_reasoning_log, is_approved, approved_by, executed_at)
+            VALUES (:id, :email_id, 'Ticket-Created', :body, :reasoning, FALSE, NULL, NULL)
+            """
+        ),
+        {
+            "id": action_id,
+            "email_id": email_uuid,
+            "body": body,
+            "reasoning": json.dumps({"title": title, "assignee": assignee}),
+        },
+    )
+
+    audit_id = uuid.uuid4()
+    await db.execute(
+        text(
+            """
+            INSERT INTO audit_log (id, entity_type, entity_id, action, performed_by, timestamp, diff)
+            VALUES (:id, 'action', :entity_id, 'internal_ticket_created', 'agent', :timestamp, :diff)
+            """
+        ),
+        {
+            "id": audit_id,
+            "entity_id": action_id,
+            "timestamp": datetime.now(timezone.utc),
+            "diff": json.dumps({"title": title, "assignee": assignee}),
+        },
+    )
+    await db.commit()
+    return {"ok": True, "ticket_id": str(action_id), "title": title, "assignee": assignee}
+
+
+async def scrape_public_sentiment(company_name: str, db) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
-    cached = await db.scalar(
-        select(WebIntelligenceCache).where(
-            WebIntelligenceCache.target_entity == company_name,
-            WebIntelligenceCache.expires_at > now,
+    cached = (
+        await db.execute(
+            text("SELECT scraped_data FROM web_intelligence_cache WHERE target_entity = :company AND expires_at > :now"),
+            {"company": company_name, "now": now},
         )
-    )
+    ).fetchone()
     if cached:
         return {"company_name": company_name, "cached": True, "data": cached.scraped_data}
 
@@ -199,63 +260,118 @@ async def scrape_public_sentiment(company_name: str, db: AsyncSession) -> dict[s
     except Exception as exc:
         return {"company_name": company_name, "cached": False, "error": str(exc), "data": {"mentions": []}}
 
-    cache = WebIntelligenceCache(
-        target_entity=company_name,
-        source_url="trustpilot,g2",
-        scraped_data=data,
-        scraped_at=now,
-        expires_at=now + timedelta(hours=settings.scrape_cache_ttl_hours),
+    cache_id = uuid.uuid4()
+    await db.execute(
+        text(
+            """
+            INSERT INTO web_intelligence_cache (id, target_entity, source_url, scraped_data, scraped_at, expires_at)
+            VALUES (:id, :target_entity, :source_url, :scraped_data, :scraped_at, :expires_at)
+            """
+        ),
+        {
+            "id": cache_id,
+            "target_entity": company_name,
+            "source_url": "trustpilot,g2",
+            "scraped_data": json.dumps(data),
+            "scraped_at": now,
+            "expires_at": now + timedelta(hours=settings.scrape_cache_ttl_hours),
+        },
     )
-    db.add(cache)
     await db.commit()
     return {"company_name": company_name, "cached": False, "data": data}
 
 
-async def flag_for_legal(email_id: str, issue_type: str, db: AsyncSession) -> dict[str, Any]:
-    email = await db.get(Email, _uuid(email_id))
+async def flag_for_legal(email_id: str, issue_type: str, db) -> dict[str, Any]:
+    email = (
+        await db.execute(
+            text("SELECT id FROM emails WHERE id = :id"),
+            {"id": _uuid(email_id)},
+        )
+    ).fetchone()
     if email is None:
         return {"ok": False, "error": "Email not found", "email_id": email_id}
 
-    email.urgency = "Critical"
-    action = Action(
-        email_id=email.id,
-        action_type="Legal-Flag",
-        agent_reasoning_log={"issue_type": issue_type},
+    await db.execute(
+        text("UPDATE emails SET urgency = 'Critical' WHERE id = :id"),
+        {"id": email.id},
     )
-    db.add(action)
-    await db.flush()
-    db.add(
-        AuditLog(
-            entity_type="email",
-            entity_id=email.id,
-            action="flagged_for_legal",
-            performed_by="agent",
-            diff={"issue_type": issue_type, "action_id": str(action.id)},
-        )
+
+    action_id = uuid.uuid4()
+    await db.execute(
+        text(
+            """
+            INSERT INTO actions (id, email_id, action_type, agent_reasoning_log, proposed_content, is_approved, approved_by, executed_at)
+            VALUES (:id, :email_id, 'Legal-Flag', :reasoning, NULL, FALSE, NULL, NULL)
+            """
+        ),
+        {
+            "id": action_id,
+            "email_id": email.id,
+            "reasoning": json.dumps({"issue_type": issue_type}),
+        },
+    )
+
+    audit_id = uuid.uuid4()
+    await db.execute(
+        text(
+            """
+            INSERT INTO audit_log (id, entity_type, entity_id, action, performed_by, timestamp, diff)
+            VALUES (:id, 'email', :entity_id, 'flagged_for_legal', 'agent', :timestamp, :diff)
+            """
+        ),
+        {
+            "id": audit_id,
+            "entity_id": email.id,
+            "timestamp": datetime.now(timezone.utc),
+            "diff": json.dumps({"issue_type": issue_type, "action_id": str(action_id)}),
+        },
     )
     await db.commit()
-    return {"ok": True, "email_id": str(email.id), "action_id": str(action.id), "issue_type": issue_type}
+    return {"ok": True, "email_id": str(email.id), "action_id": str(action_id), "issue_type": issue_type}
 
 
-async def send_auto_reply(email_id: str, draft_id: str, db: AsyncSession) -> dict[str, Any]:
-    email = await db.get(Email, _uuid(email_id))
+async def send_auto_reply(email_id: str, draft_id: str, db) -> dict[str, Any]:
+    email = (
+        await db.execute(
+            text("SELECT id FROM emails WHERE id = :id"),
+            {"id": _uuid(email_id)},
+        )
+    ).fetchone()
     if email is None:
         return {"ok": False, "error": "Email not found", "email_id": email_id}
-    action = await db.get(Action, _uuid(draft_id))
+    action = (
+        await db.execute(
+            text("SELECT id FROM actions WHERE id = :id"),
+            {"id": _uuid(draft_id)},
+        )
+    ).fetchone()
     if action is None:
         return {"ok": False, "error": "Draft action not found", "draft_id": draft_id}
 
-    action.is_approved = True
-    action.executed_at = datetime.now(timezone.utc)
-    email.status = "Replied"
-    db.add(
-        AuditLog(
-            entity_type="email",
-            entity_id=email.id,
-            action="auto_reply_sent",
-            performed_by="agent",
-            diff={"draft_id": draft_id},
-        )
+    now = datetime.now(timezone.utc)
+    await db.execute(
+        text("UPDATE actions SET is_approved = TRUE, executed_at = :now WHERE id = :id"),
+        {"now": now, "id": action.id},
+    )
+    await db.execute(
+        text("UPDATE emails SET status = 'Replied' WHERE id = :id"),
+        {"id": email.id},
+    )
+
+    audit_id = uuid.uuid4()
+    await db.execute(
+        text(
+            """
+            INSERT INTO audit_log (id, entity_type, entity_id, action, performed_by, timestamp, diff)
+            VALUES (:id, 'email', :entity_id, 'auto_reply_sent', 'agent', :timestamp, :diff)
+            """
+        ),
+        {
+            "id": audit_id,
+            "entity_id": email.id,
+            "timestamp": now,
+            "diff": json.dumps({"draft_id": draft_id}),
+        },
     )
     await db.commit()
     return {"ok": True, "email_id": str(email.id), "draft_id": draft_id, "status": "Replied"}
@@ -281,3 +397,4 @@ async def _scrape_review_sites(company_name: str) -> dict[str, Any]:
         "g2": g2_res,
         "scraped_at": datetime.now(timezone.utc).isoformat(),
     }
+

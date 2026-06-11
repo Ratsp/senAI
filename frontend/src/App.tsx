@@ -99,6 +99,9 @@ export default function App() {
   const [ragQuery, setRagQuery] = useState("");
   const [ragResults, setRagResults] = useState<any[]>([]);
   const [reputationData, setReputationData] = useState<any>(null);
+  const [sentimentTrend, setSentimentTrend] = useState<any>(null);
+  const [heatmapData, setHeatmapData] = useState<any[]>([]);
+  const [atRiskContacts, setAtRiskContacts] = useState<any[]>([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Editing draft state
@@ -114,10 +117,15 @@ export default function App() {
   const loadData = async () => {
     try {
       setIsRefreshing(true);
-      const [threadsRes, statsRes, reputationRes] = await Promise.all([
+      const [threadsRes, statsRes, reputationRes, sentimentRes, heatmapRes, atRiskRes] = await Promise.all([
         fetch("http://127.0.0.1:8000/threads"),
         fetch("http://127.0.0.1:8000/dashboard/stats"),
-        fetch("http://127.0.0.1:8000/intelligence/reputation")
+        fetch("http://127.0.0.1:8000/intelligence/reputation"),
+        fetch("http://127.0.0.1:8000/analytics/sentiment-trend"),
+        fetch("http://127.0.0.1:8000/analytics/heatmap"),
+        fetch("http://127.0.0.1:8000/analytics/at-risk-contacts", {
+          headers: { "X-API-Key": "senai_secure_api_key" }
+        })
       ]);
 
       if (threadsRes.ok) {
@@ -132,6 +140,15 @@ export default function App() {
       }
       if (reputationRes.ok) {
         setReputationData(await reputationRes.json());
+      }
+      if (sentimentRes.ok) {
+        setSentimentTrend(await sentimentRes.json());
+      }
+      if (heatmapRes.ok) {
+        setHeatmapData(await heatmapRes.json());
+      }
+      if (atRiskRes.ok) {
+        setAtRiskContacts(await atRiskRes.json());
       }
     } catch (e) {
       console.error("Error loading API data", e);
@@ -193,7 +210,9 @@ export default function App() {
   // Load Contact Profile when selected thread sender email updates
   useEffect(() => {
     if (selectedThread?.sender_email) {
-      fetch(`http://127.0.0.1:8000/contacts/${selectedThread.sender_email}`)
+      fetch(`http://127.0.0.1:8000/contacts/${selectedThread.sender_email}`, {
+        headers: { "X-API-Key": "senai_secure_api_key" }
+      })
         .then((res) => {
           if (res.ok) return res.json();
           return null;
@@ -211,7 +230,9 @@ export default function App() {
   const handleRagSearch = async () => {
     if (!ragQuery.trim()) return;
     try {
-      const res = await fetch(`http://127.0.0.1:8000/rag/search?q=${encodeURIComponent(ragQuery)}`);
+      const res = await fetch(`http://127.0.0.1:8000/rag/search?q=${encodeURIComponent(ragQuery)}`, {
+        headers: { "X-API-Key": "senai_secure_api_key" }
+      });
       if (res.ok) {
         const data = await res.json();
         setRagResults(data.results || []);
@@ -343,6 +364,56 @@ export default function App() {
       }
       return part;
     });
+  };
+
+  const getSentimentTrendData = () => {
+    if (!sentimentTrend || !sentimentTrend.data_points || sentimentTrend.data_points.length === 0) {
+      return { points: "", circles: [] as any[], labels: [] as string[] };
+    }
+    
+    const sorted = [...sentimentTrend.data_points].sort(
+      (a: any, b: any) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    );
+    
+    const width = 450;
+    const height = 180;
+    const minTime = new Date(sorted[0].timestamp).getTime();
+    const maxTime = new Date(sorted[sorted.length - 1].timestamp).getTime();
+    const timeRange = maxTime - minTime || 1;
+    
+    const mapped = sorted.map((pt: any) => {
+      const t = new Date(pt.timestamp).getTime();
+      const x = ((t - minTime) / timeRange) * (width - 60) + 30;
+      const score = pt.score;
+      const y = height - ((score + 1.0) / 2.0) * (height - 40) - 20;
+      return { x, y, score, dateStr: new Date(pt.timestamp).toLocaleDateString() };
+    });
+    
+    const points = mapped.map((p) => `${p.x},${p.y}`).join(" ");
+    
+    const labels: string[] = [];
+    if (sorted.length > 0) {
+      const step = Math.max(1, Math.floor(sorted.length / 4));
+      for (let i = 0; i < sorted.length; i += step) {
+        labels.push(new Date(sorted[i].timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric" }));
+        if (labels.length >= 5) break;
+      }
+      const lastLabel = new Date(sorted[sorted.length - 1].timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+      if (labels.length < 5 && !labels.includes(lastLabel)) {
+        labels.push(lastLabel);
+      }
+    }
+    
+    return { points, circles: mapped, labels };
+  };
+
+  const getHeatmapColor = (seconds: number | null) => {
+    if (seconds === null) return "bg-slate-900/50 border border-slate-950/65";
+    const mins = seconds / 60;
+    if (mins <= 15) return "bg-emerald-500/80 border border-emerald-600/70";
+    if (mins <= 60) return "bg-teal-500/80 border border-teal-600/70";
+    if (mins <= 240) return "bg-amber-500/80 border border-amber-600/70";
+    return "bg-rose-500/80 border border-rose-600/70";
   };
 
   return (
@@ -562,8 +633,7 @@ export default function App() {
                     <div className="flex-1 overflow-y-auto p-4 space-y-6">
                       {selectedThread.emails.map((email) => {
                         const score = email.sentiment_score;
-                        const action = email.actions && email.actions[0];
-                        const reasoning = action?.agent_reasoning_log;
+                        const reasoning = email.actions?.find(a => a.agent_reasoning_log)?.agent_reasoning_log;
 
                         return (
                           <div key={email.id} className="bg-slate-950/40 border border-slate-800 rounded-xl p-4 shadow-sm space-y-4">
@@ -597,8 +667,8 @@ export default function App() {
                               {highlightEntities(email.body)}
                             </p>
 
-                            {/* Agent Reasoning Panel (Collapsible Thought-Action trace) */}
-                            {reasoning && (
+                            {/* Agent Triage Panel (always show if category or reasoning exists) */}
+                            {(reasoning || email.category) && (
                               <div className="border border-slate-800/80 rounded-xl bg-slate-950/60 overflow-hidden">
                                 <div className="bg-slate-900/80 px-4 py-2 border-b border-slate-800 flex items-center justify-between">
                                   <div className="flex items-center gap-2 text-xs font-bold text-slate-300">
@@ -612,38 +682,92 @@ export default function App() {
                                   )}
                                 </div>
                                 <div className="p-4 text-[11px] font-mono space-y-3">
-                                  {reasoning.steps ? (
-                                    reasoning.steps.map((step: any, stepIdx: number) => (
-                                      <div key={stepIdx} className="space-y-1.5 border-l-2 border-slate-800 pl-3 pb-2">
-                                        <div className="text-slate-300 font-semibold flex items-center gap-1">
-                                          <Clock className="h-3.5 w-3.5 text-slate-500" />
-                                          Step {stepIdx + 1}: Thought
-                                        </div>
-                                        <div className="text-slate-400 italic font-sans leading-normal">
-                                          {step.thought}
-                                        </div>
-                                        {step.action !== "DONE" && (
-                                          <div className="mt-1 flex flex-wrap gap-2 text-[10px] bg-slate-900 border border-slate-800 rounded px-2 py-1 font-mono">
-                                            <span className="text-violet-400">Action:</span>
-                                            <span className="text-slate-300 font-semibold">{step.action}</span>
-                                            {step.action_input && (
-                                              <>
-                                                <span className="text-slate-500">Params:</span>
-                                                <span className="text-cyan-400 truncate max-w-xs">{JSON.stringify(step.action_input)}</span>
-                                              </>
+                                  {/* Always display core classification details */}
+                                  <div className="space-y-2">
+                                    <div className="text-slate-400 italic">Classification Details:</div>
+                                    <div className="grid grid-cols-2 gap-2 text-[10px] bg-slate-900 rounded p-2">
+                                      <div><span className="text-slate-500">Category:</span> <span className="text-slate-300 font-semibold">{reasoning?.category || email.category || "Other"}</span></div>
+                                      <div><span className="text-slate-500">Urgency:</span> <span className="text-slate-300 font-semibold">{reasoning?.urgency || email.urgency || "Medium"}</span></div>
+                                      <div><span className="text-slate-500">Requires Human:</span> <span className="text-slate-300 font-semibold">{(reasoning?.requires_human !== undefined ? reasoning.requires_human : email.requires_human) ? "Yes" : "No"}</span></div>
+                                      <div><span className="text-slate-500">RAG chunks:</span> <span className="text-slate-300 font-semibold">{(reasoning?.rag_sources || email.raw_entities?.rag_sources)?.join(", ") || "None"}</span></div>
+                                      <div className="col-span-2 border-t border-slate-800/80 pt-1.5 mt-1.5">
+                                        <span className="text-slate-500">Final Decision:</span> <span className="text-violet-400 font-semibold">{email.actions && email.actions.length > 0 ? email.actions.map(a => a.action_type).join(", ") : "Ignored"}</span>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  {/* Tool execution sequence */}
+                                  {reasoning?.steps && reasoning.steps.length > 0 && (
+                                    <div className="space-y-1.5 mt-2 bg-slate-900/40 p-2 rounded border border-slate-800/80">
+                                      <div className="text-slate-400 font-semibold flex items-center gap-1">
+                                        <Activity className="h-3.5 w-3.5 text-violet-400" />
+                                        Tool Execution Sequence:
+                                      </div>
+                                      <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                                        {reasoning.steps.map((step: any, idx: number) => (
+                                          <div key={idx} className="flex items-center gap-1.5">
+                                            {idx > 0 && <span className="text-slate-650">→</span>}
+                                            <span className="px-2 py-0.5 bg-slate-950 border border-slate-800 rounded text-[9px] text-slate-300 font-mono">
+                                              {step.action}
+                                            </span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {/* Abort or Skip alerts */}
+                                  {email.raw_entities?.AGENT_EXECUTION_STATUS === "Failed" && (
+                                    <div className="p-2 bg-rose-500/10 border border-rose-500/20 rounded text-[10px] text-rose-400 mt-2.5">
+                                      <div className="font-semibold flex items-center gap-1">
+                                        <AlertTriangle className="h-3.5 w-3.5 text-rose-400" />
+                                        Agent Execution Failed
+                                      </div>
+                                      <div className="mt-1 font-mono text-[9px] break-words whitespace-pre-wrap">
+                                        {email.raw_entities?.AGENT_EXECUTION_ERROR || "Unknown error occurred during execution."}
+                                      </div>
+                                    </div>
+                                  )}
+                                  {email.raw_entities?.AGENT_EXECUTION_STATUS === "Skipped" && (
+                                    <div className="p-2 bg-amber-500/10 border border-amber-500/20 rounded text-[10px] text-amber-400 mt-2.5">
+                                      <div className="font-semibold flex items-center gap-1">
+                                        <AlertCircle className="h-3.5 w-3.5 text-amber-400" />
+                                        Agent Execution Skipped
+                                      </div>
+                                      <div className="mt-1 text-[10px]">
+                                        Reason: {email.raw_entities?.AGENT_EXECUTION_SKIP_REASON || "No reason specified."}
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {/* If this is a ReAct agent execution with steps, show the trace trace below */}
+                                  {reasoning?.steps && reasoning.steps.length > 0 && (
+                                    <div className="space-y-2 pt-2.5 border-t border-slate-800/80">
+                                      <div className="text-slate-400 italic">ReAct Agent Trace:</div>
+                                      <div className="space-y-3">
+                                        {reasoning.steps.map((step: any, stepIdx: number) => (
+                                          <div key={stepIdx} className="space-y-1.5 border-l-2 border-slate-800 pl-3 pb-2">
+                                            <div className="text-slate-300 font-semibold flex items-center gap-1">
+                                              <Clock className="h-3.5 w-3.5 text-slate-500" />
+                                              Step {stepIdx + 1}: Thought
+                                            </div>
+                                            <div className="text-slate-400 italic font-sans leading-normal">
+                                              {step.thought}
+                                            </div>
+                                            {step.action !== "DONE" && (
+                                              <div className="mt-1 flex flex-wrap gap-2 text-[10px] bg-slate-900 border border-slate-800 rounded px-2 py-1 font-mono">
+                                                <span className="text-violet-400">Action:</span>
+                                                <span className="text-slate-300 font-semibold">{step.action}</span>
+                                                {step.action_input && (
+                                                  <>
+                                                    <span className="text-slate-500">Params:</span>
+                                                    <span className="text-cyan-400 truncate max-w-xs">{JSON.stringify(step.action_input)}</span>
+                                                  </>
+                                                )}
+                                              </div>
                                             )}
                                           </div>
-                                        )}
-                                      </div>
-                                    ))
-                                  ) : (
-                                    <div className="space-y-2">
-                                      <div className="text-slate-400 italic">Classification Details:</div>
-                                      <div className="grid grid-cols-2 gap-2 text-[10px] bg-slate-900 rounded p-2">
-                                        <div><span className="text-slate-500">Category:</span> <span className="text-slate-300 font-semibold">{reasoning.category}</span></div>
-                                        <div><span className="text-slate-500">Urgency:</span> <span className="text-slate-300 font-semibold">{reasoning.urgency}</span></div>
-                                        <div><span className="text-slate-500">Requires Human:</span> <span className="text-slate-300 font-semibold">{reasoning.requires_human ? "Yes" : "No"}</span></div>
-                                        <div><span className="text-slate-500">RAG chunks:</span> <span className="text-slate-300 font-semibold">{reasoning.rag_sources?.join(", ") || "None"}</span></div>
+                                        ))}
                                       </div>
                                     </div>
                                   )}
@@ -652,75 +776,80 @@ export default function App() {
                             )}
 
                             {/* Draft content display area */}
-                            {action && action.action_type === "Auto-Reply" && !action.is_approved && (
-                              <div className="bg-slate-950/90 border border-violet-500/20 rounded-xl p-4 space-y-3 shadow-md">
-                                <div className="flex items-center justify-between">
-                                  <div className="text-xs font-bold text-violet-300 flex items-center gap-1.5">
-                                    <Edit2 className="h-3.5 w-3.5" />
-                                    Proposed Auto-Reply Draft
-                                  </div>
-                                  <div className="flex items-center gap-2">
-                                    <button
-                                      onClick={() => {
-                                        setEditingActionId(action.id);
-                                        setEditedReplyText(action.proposed_content || "");
-                                      }}
-                                      className="flex items-center gap-1 px-2.5 py-1 bg-slate-800 border border-slate-700 hover:bg-slate-700 text-[10px] font-bold rounded transition-colors text-slate-200"
-                                    >
-                                      Edit
-                                    </button>
-                                    <button
-                                      onClick={() => handleApproveDraft(action.id)}
-                                      className="flex items-center gap-1 px-2.5 py-1 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-[10px] font-bold rounded transition-colors text-white shadow-md shadow-violet-600/10"
-                                    >
-                                      Approve & Send
-                                    </button>
-                                  </div>
-                                </div>
-                                {editingActionId === action.id ? (
-                                  <div className="space-y-2">
-                                    <textarea
-                                      value={editedReplyText}
-                                      onChange={(e) => setEditedReplyText(e.target.value)}
-                                      className="w-full h-28 bg-slate-900 border border-slate-850 rounded-lg p-2.5 text-xs font-sans text-slate-100 focus:outline-none focus:border-violet-500"
-                                    />
-                                    <div className="flex justify-end gap-2">
-                                      <button
-                                        onClick={() => setEditingActionId(null)}
-                                        className="px-2.5 py-1 text-[10px] font-bold hover:text-slate-200 text-slate-400"
-                                      >
-                                        Cancel
-                                      </button>
-                                      <button
-                                        onClick={() => handleUpdateDraft(action.id, editedReplyText)}
-                                        className="px-2.5 py-1 text-[10px] font-bold bg-violet-600 hover:bg-violet-500 text-white rounded"
-                                      >
-                                        Save Changes
-                                      </button>
+                            {email.actions?.map((act) => {
+                              if (act.action_type === "Auto-Reply" && !act.is_approved) {
+                                return (
+                                  <div key={act.id} className="bg-slate-950/90 border border-violet-500/20 rounded-xl p-4 space-y-3 shadow-md mt-3">
+                                    <div className="flex items-center justify-between">
+                                      <div className="text-xs font-bold text-violet-300 flex items-center gap-1.5">
+                                        <Edit2 className="h-3.5 w-3.5" />
+                                        Proposed Auto-Reply Draft
+                                      </div>
+                                      <div className="flex items-center gap-2">
+                                        <button
+                                          onClick={() => {
+                                            setEditingActionId(act.id);
+                                            setEditedReplyText(act.proposed_content || "");
+                                          }}
+                                          className="flex items-center gap-1 px-2.5 py-1 bg-slate-800 border border-slate-700 hover:bg-slate-700 text-[10px] font-bold rounded transition-colors text-slate-200"
+                                        >
+                                          Edit
+                                        </button>
+                                        <button
+                                          onClick={() => handleApproveDraft(act.id)}
+                                          className="flex items-center gap-1 px-2.5 py-1 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-[10px] font-bold rounded transition-colors text-white shadow-md shadow-violet-600/10"
+                                        >
+                                          Approve & Send
+                                        </button>
+                                      </div>
                                     </div>
+                                    {editingActionId === act.id ? (
+                                      <div className="space-y-2">
+                                        <textarea
+                                          value={editedReplyText}
+                                          onChange={(e) => setEditedReplyText(e.target.value)}
+                                          className="w-full h-28 bg-slate-900 border border-slate-850 rounded-lg p-2.5 text-xs font-sans text-slate-100 focus:outline-none focus:border-violet-500"
+                                        />
+                                        <div className="flex justify-end gap-2">
+                                          <button
+                                            onClick={() => setEditingActionId(null)}
+                                            className="px-2.5 py-1 text-[10px] font-bold hover:text-slate-200 text-slate-400"
+                                          >
+                                            Cancel
+                                          </button>
+                                          <button
+                                            onClick={() => handleUpdateDraft(act.id, editedReplyText)}
+                                            className="px-2.5 py-1 text-[10px] font-bold bg-violet-600 hover:bg-violet-500 text-white rounded"
+                                          >
+                                            Save Changes
+                                          </button>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <p className="text-xs text-slate-300 italic border-l-2 border-violet-500/40 pl-3 whitespace-pre-wrap leading-relaxed bg-slate-900/30 p-2.5 rounded-lg">
+                                        "{act.proposed_content}"
+                                      </p>
+                                    )}
                                   </div>
-                                ) : (
-                                  <p className="text-xs text-slate-300 italic border-l-2 border-violet-500/40 pl-3 whitespace-pre-wrap leading-relaxed bg-slate-900/30 p-2.5 rounded-lg">
-                                    "{action.proposed_content}"
-                                  </p>
-                                )}
-                              </div>
-                            )}
+                                );
+                              }
+                              return null;
+                            })}
 
-                            {/* Executed responses audit tag */}
-                            {action && action.is_approved && (
-                              <div className="flex items-center gap-2 p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-lg text-[11px] text-emerald-400">
+                            {/* Executed responses audit tags */}
+                            {email.actions?.filter(act => act.is_approved).map((act) => (
+                              <div key={act.id} className="flex items-center gap-2 p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-lg text-[11px] text-emerald-400 mt-2">
                                 <CheckCircle className="h-4 w-4" />
                                 <div>
-                                  <span className="font-semibold capitalize">{action.action_type} executed</span> by <span className="font-mono">{action.approved_by || "agent"}</span> at {action.executed_at ? new Date(action.executed_at).toLocaleString() : ""}
-                                  {action.proposed_content && (
+                                  <span className="font-semibold capitalize">{act.action_type} executed</span> by <span className="font-mono">{act.approved_by || "agent"}</span> at {act.executed_at ? new Date(act.executed_at).toLocaleString() : ""}
+                                  {act.proposed_content && (
                                     <p className="text-[10px] text-slate-300 mt-1 italic font-sans whitespace-pre-wrap border-l border-emerald-500/30 pl-2">
-                                      "{action.proposed_content}"
+                                      "{act.proposed_content}"
                                     </p>
                                   )}
                                 </div>
                               </div>
-                            )}
+                            ))}
                           </div>
                         );
                       })}
@@ -802,6 +931,8 @@ export default function App() {
                             <span className={`px-2 py-0.5 rounded font-extrabold text-[9px] ${
                               contactProfile.contact.status === "VIP"
                                 ? "bg-amber-500/15 border border-amber-500/20 text-amber-400 animate-pulse"
+                                : contactProfile.contact.status === "At Risk"
+                                ? "bg-rose-500/15 border border-rose-500/20 text-rose-400 animate-pulse"
                                 : "bg-slate-800 border border-slate-700 text-slate-300"
                             }`}>
                               {contactProfile.contact.status}
@@ -953,32 +1084,52 @@ export default function App() {
                   <span className="absolute left-2 top-2 text-[9px] text-emerald-400">+1.0 Positive</span>
                   <span className="absolute left-2 bottom-2 text-[9px] text-rose-500">-1.0 Negative</span>
                   
-                  {/* Draw mock trend line */}
-                  <svg className="w-full h-full absolute inset-0 overflow-visible" preserveAspectRatio="none">
-                    <polyline
-                      fill="none"
-                      stroke="#8b5cf6"
-                      strokeWidth="3"
-                      points="10,80 70,60 130,120 190,90 250,50 310,110 370,140 430,90 490,130"
-                    />
-                    {/* Dots */}
-                    <circle cx="10" cy="80" r="4" fill="#a78bfa" />
-                    <circle cx="70" cy="60" r="4" fill="#a78bfa" />
-                    <circle cx="130" cy="120" r="4" fill="#a78bfa" />
-                    <circle cx="190" cy="90" r="4" fill="#a78bfa" />
-                    <circle cx="250" cy="50" r="4" fill="#a78bfa" />
-                    <circle cx="310" cy="110" r="4" fill="#a78bfa" />
-                    <circle cx="370" cy="140" r="4" fill="#f43f5e" />
-                    <circle cx="430" cy="90" r="4" fill="#a78bfa" />
-                    <circle cx="490" cy="130" r="4" fill="#a78bfa" />
-                  </svg>
+                  {(() => {
+                    const trend = getSentimentTrendData();
+                    if (!trend.points) {
+                      return (
+                        <div className="absolute inset-0 flex items-center justify-center text-xs text-slate-500 italic">
+                          No sentiment data recorded yet.
+                        </div>
+                      );
+                    }
+                    return (
+                      <svg className="w-full h-full absolute inset-0 overflow-visible" viewBox="0 0 450 180" preserveAspectRatio="none">
+                        <polyline
+                          fill="none"
+                          stroke="#8b5cf6"
+                          strokeWidth="3"
+                          points={trend.points}
+                        />
+                        {trend.circles.map((c, i) => (
+                          <circle
+                            key={i}
+                            cx={c.x}
+                            cy={c.y}
+                            r="4.5"
+                            fill={c.score > 0.3 ? "#10b981" : c.score < -0.3 ? "#f43f5e" : "#fbbf24"}
+                            title={`Sentiment: ${c.score.toFixed(2)} (${c.dateStr})`}
+                          />
+                        ))}
+                      </svg>
+                    );
+                  })()}
                 </div>
                 <div className="flex justify-between text-[10px] text-slate-500 font-mono">
-                  <span>Nov 1</span>
-                  <span>Nov 5</span>
-                  <span>Nov 10</span>
-                  <span>Nov 15</span>
-                  <span>Nov 20</span>
+                  {(() => {
+                    const trend = getSentimentTrendData();
+                    if (trend.labels.length === 0) {
+                      return (
+                        <>
+                          <span>Timeline Start</span>
+                          <span>Timeline End</span>
+                        </>
+                      );
+                    }
+                    return trend.labels.map((lbl, idx) => (
+                      <span key={idx}>{lbl}</span>
+                    ));
+                  })()}
                 </div>
               </div>
 
@@ -1010,6 +1161,86 @@ export default function App() {
               </div>
             </div>
 
+            {/* Activity Response Time Heatmap widget */}
+            <div className="bg-slate-950/60 border border-slate-850 rounded-xl p-5 space-y-4">
+              <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-2">
+                <Clock className="h-4 w-4 text-cyan-400" />
+                Response Time Heatmap (Day of Week vs Hour of Day)
+              </h4>
+              <p className="text-[11px] text-slate-400 leading-normal">
+                Color cells represent the average response time for emails received during that slot. Hover to see details.
+              </p>
+              
+              <div className="overflow-x-auto pb-2">
+                <div className="min-w-[760px] space-y-1.5 font-sans">
+                  {/* Heatmap header for hours 0-23 */}
+                  <div className="flex items-center gap-1 text-[9px] text-slate-500 font-bold uppercase tracking-wider pl-12">
+                    {Array.from({ length: 24 }, (_, h) => (
+                      <span key={h} className="w-6 text-center">{h}</span>
+                    ))}
+                  </div>
+
+                  {/* Heatmap rows for Mon-Sun */}
+                  {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((dayName, dayIdx) => {
+                    const dayNum = dayIdx + 1; // ISO day is 1-7
+                    return (
+                      <div key={dayName} className="flex items-center gap-1">
+                        <span className="w-10 text-[10px] text-slate-400 font-bold">{dayName}</span>
+                        {Array.from({ length: 24 }, (_, hour) => {
+                          const match = heatmapData.find(d => d.day_of_week === dayNum && d.hour_of_day === hour);
+                          const seconds = match ? match.avg_response_time_seconds : null;
+                          const formattedTime = seconds !== null
+                            ? seconds / 60 <= 60
+                              ? `${(seconds / 60).toFixed(1)}m`
+                              : `${(seconds / 3600).toFixed(1)}h`
+                            : "No data";
+                            
+                          return (
+                            <div
+                              key={hour}
+                              className={`w-6 h-6 rounded ${getHeatmapColor(seconds)} flex items-center justify-center transition-all hover:scale-110 cursor-help`}
+                              title={`${dayName} at ${hour}:00 | Avg Response: ${formattedTime}`}
+                            >
+                              {seconds !== null && (
+                                <span className="text-[7px] font-extrabold text-slate-950 truncate">
+                                  {seconds / 60 <= 60 ? Math.round(seconds / 60) : Math.round(seconds / 3600) + "h"}
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Legend bar */}
+              <div className="flex items-center gap-4 text-[10px] text-slate-400 font-medium pt-2 border-t border-slate-900">
+                <span className="font-bold">Legend:</span>
+                <div className="flex items-center gap-1.5">
+                  <div className="w-3.5 h-3.5 rounded bg-slate-900 border border-slate-950"></div>
+                  <span>No Data</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <div className="w-3.5 h-3.5 rounded bg-emerald-500"></div>
+                  <span>Fast (&le; 15m)</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <div className="w-3.5 h-3.5 rounded bg-teal-500"></div>
+                  <span>Standard (&le; 1h)</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <div className="w-3.5 h-3.5 rounded bg-amber-500"></div>
+                  <span>Medium (&le; 4h)</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <div className="w-3.5 h-3.5 rounded bg-rose-500"></div>
+                  <span>Slow (&gt; 4h)</span>
+                </div>
+              </div>
+            </div>
+
             {/* VIP At-Risk accounts lists */}
             <div className="bg-slate-950/60 border border-slate-850 rounded-xl p-5 space-y-4">
               <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-2">
@@ -1028,22 +1259,35 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-850/60">
-                    {threads
-                      .filter((t) => t.sender_email.includes("karen") || t.sender_email.includes("bob"))
-                      .slice(0, 3)
-                      .map((t, idx) => (
+                    {atRiskContacts.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="p-4 text-center text-slate-500 italic">No at-risk VIP accounts detected.</td>
+                      </tr>
+                    ) : (
+                      atRiskContacts.map((contact, idx) => (
                         <tr key={idx} className="hover:bg-slate-900/30">
-                          <td className="p-3 font-semibold text-violet-400">{t.sender_email}</td>
-                          <td className="p-3 text-slate-300">{t.sender_email.includes("karen") ? "Retail Co" : "Enterprise Net"}</td>
-                          <td className="p-3 font-mono text-slate-300">${t.sender_email.includes("karen") ? "48,000" : "150,000"}</td>
-                          <td className="p-3 text-rose-500 font-bold">85%</td>
+                          <td className="p-3 font-semibold text-violet-400">{contact.email}</td>
+                          <td className="p-3 text-slate-300">{contact.company || "N/A"}</td>
+                          <td className="p-3 font-mono text-slate-300">
+                            ${contact.account_value?.toLocaleString(undefined, { minimumFractionDigits: 2 }) || "0.00"}
+                          </td>
+                          <td className={`p-3 font-bold ${
+                            contact.churn_risk_score >= 0.7 ? "text-rose-500" : "text-amber-400"
+                          }`}>
+                            {(contact.churn_risk_score * 100).toFixed(0)}%
+                          </td>
                           <td className="p-3">
-                            <span className="bg-rose-500/10 text-rose-400 border border-rose-500/20 px-2 py-0.5 rounded text-[10px] font-bold">
-                              High Risk
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              contact.status === "At Risk" || contact.churn_risk_score >= 0.7
+                                ? "bg-rose-500/10 text-rose-400 border border-rose-500/20"
+                                : "bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                            }`}>
+                              {contact.status}
                             </span>
                           </td>
                         </tr>
-                      ))}
+                      ))
+                    )}
                   </tbody>
                 </table>
               </div>

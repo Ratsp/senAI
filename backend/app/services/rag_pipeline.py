@@ -1,12 +1,10 @@
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import tiktoken
-from sqlalchemy import delete, text
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.models import KnowledgeChunk
-
+from sqlalchemy import text
 
 CHUNK_SIZE = 400
 CHUNK_OVERLAP = 50
@@ -42,18 +40,32 @@ def embed_text(text_content: str, embedder: Any) -> list[float]:
     return embedding
 
 
-async def store_chunks(chunks: list[dict[str, str]], embedder: Any, db: AsyncSession) -> None:
+async def store_chunks(chunks: list[dict[str, str]], embedder: Any, db) -> None:
     source_docs = {chunk["source_doc"] for chunk in chunks}
     for source_doc in source_docs:
-        await db.execute(delete(KnowledgeChunk).where(KnowledgeChunk.source_doc == source_doc))
+        await db.execute(
+            text("DELETE FROM knowledge_chunks WHERE source_doc = :source_doc"),
+            {"source_doc": source_doc},
+        )
 
+    now = datetime.now(timezone.utc)
     for chunk in chunks:
-        db.add(
-            KnowledgeChunk(
-                source_doc=chunk["source_doc"],
-                chunk_text=chunk["chunk_text"],
-                embedding=embed_text(chunk["chunk_text"], embedder),
-            )
+        chunk_id = uuid.uuid4()
+        embedding_val = embed_text(chunk["chunk_text"], embedder)
+        await db.execute(
+            text(
+                """
+                INSERT INTO knowledge_chunks (id, source_doc, chunk_text, embedding, created_at)
+                VALUES (:id, :source_doc, :chunk_text, cast(:embedding as vector), :created_at)
+                """
+            ),
+            {
+                "id": chunk_id,
+                "source_doc": chunk["source_doc"],
+                "chunk_text": chunk["chunk_text"],
+                "embedding": _to_pgvector_literal(embedding_val),
+                "created_at": now,
+            },
         )
     await db.commit()
 
@@ -61,10 +73,11 @@ async def store_chunks(chunks: list[dict[str, str]], embedder: Any, db: AsyncSes
 async def retrieve_relevant_chunks(
     query: str,
     embedder: Any,
-    db: AsyncSession,
+    db,
     top_k: int = 3,
 ) -> list[dict[str, Any]]:
     query_embedding = embed_text(query, embedder)
+    fetch_limit = max(6, top_k * 2)
     result = await db.execute(
         text(
             """
@@ -73,22 +86,31 @@ async def retrieve_relevant_chunks(
                    1 - (embedding <=> cast(:embedding as vector)) as similarity_score
             from knowledge_chunks
             order by embedding <=> cast(:embedding as vector)
-            limit :top_k
+            limit :fetch_limit
             """
         ),
-        {"embedding": _to_pgvector_literal(query_embedding), "top_k": top_k},
+        {"embedding": _to_pgvector_literal(query_embedding), "fetch_limit": fetch_limit},
     )
-    return [
-        {
-            "source_doc": row.source_doc,
-            "chunk_text": row.chunk_text,
-            "similarity_score": float(row.similarity_score),
-        }
-        for row in result
-    ]
+    rows = result.fetchall()
+    
+    seen_counts = {}
+    selected = []
+    for row in rows:
+        doc = row.source_doc
+        seen_counts[doc] = seen_counts.get(doc, 0) + 1
+        if seen_counts[doc] <= 2:
+            selected.append({
+                "source_doc": row.source_doc,
+                "chunk_text": row.chunk_text,
+                "similarity_score": float(row.similarity_score),
+            })
+        if len(selected) >= top_k:
+            break
+            
+    return selected
 
 
-async def seed_knowledge_base(kb_dir: str | Path, embedder: Any, db: AsyncSession) -> int:
+async def seed_knowledge_base(kb_dir: str | Path, embedder: Any, db) -> int:
     root = Path(kb_dir).resolve()
     all_chunks: list[dict[str, str]] = []
     for doc_path in sorted(root.glob("*.md")):
@@ -102,3 +124,4 @@ async def seed_knowledge_base(kb_dir: str | Path, embedder: Any, db: AsyncSessio
 
 def _to_pgvector_literal(embedding: list[float]) -> str:
     return "[" + ",".join(str(value) for value in embedding) + "]"
+

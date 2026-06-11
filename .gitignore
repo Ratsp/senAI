@@ -38,3 +38,6 @@ uv.lock
 
 # Logs
 *.log
+
+#video
+*.mp4
