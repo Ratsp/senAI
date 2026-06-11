@@ -6,6 +6,18 @@ Equipped with model-resilient fallbacks (Groq Llama-3.1 + Gemini-3.1), pgvector 
 
 ---
 
+
+## GitHub Repository
+# SenAI – Agentic CRM Intelligence Platform
+
+An AI-powered CRM platform that automatically triages customer emails, retrieves relevant company policies using RAG (Retrieval-Augmented Generation), and executes autonomous support workflows through a LangGraph-based ReAct Agent.
+
+---
+
+## GitHub Repository
+
+[Project in GitHub :)](https://github.com/Ratsp/senAI)
+
 ## 🎥 Demo Video
 
 Demo Recording:
