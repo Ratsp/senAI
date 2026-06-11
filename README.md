@@ -6,7 +6,78 @@ Equipped with model-resilient fallbacks (Groq Llama-3.1 + Gemini-3.1), pgvector 
 
 ---
 
-## 🏗️ Architecture & Data Flow
+## 🎥 Demo Video
+
+Demo Recording:
+
+
+**Google Drive:**
+[https://drive.google.com/Demo_Video](https://drive.google.com/file/d/1wG2vKCFs-5vb3mm3FrrtDdy6UKtQF81Q/view?usp=sharing)
+
+---
+
+## 🚀 Key Highlights
+
+### Agentic AI (LangGraph ReAct Agent)
+
+* Autonomous multi-step reasoning and tool execution.
+* Executes Thought → Action → Observation loops.
+* Uses business context before making decisions.
+* Supports escalation, draft generation, legal flagging, account inspection, and policy retrieval.
+
+### Retrieval-Augmented Generation (RAG)
+
+* Semantic search using pgvector and Sentence Transformers.
+* Retrieves relevant company policies before response generation.
+* Improves factual accuracy and reduces hallucinations.
+
+### Intelligent Email Triage
+
+* Detects:
+
+  * Urgency
+  * Customer sentiment
+  * Category
+  * Escalation requirements
+* Routes high-risk conversations for human review.
+
+### Human-in-the-Loop Design
+
+* AI never sends critical responses without visibility.
+* Support agents can:
+
+  * Review AI reasoning
+  * Edit drafts
+  * Approve responses
+  * Escalate conversations
+
+### Real-Time CRM Dashboard
+
+* Mission Control Inbox
+* Thread Workspace
+* Analytics Dashboard
+* RAG Debugger
+* Live Notifications
+
+---
+
+## 🏗 Problem Statement
+
+Support teams often receive hundreds of emails daily.
+
+Manually:
+
+* Prioritizing urgent tickets
+* Searching internal policies
+* Drafting responses
+* Tracking customer sentiment
+
+is time-consuming and error-prone.
+
+SenAI automates this workflow using Agentic AI while keeping humans in control of final decisions.
+
+
+## Architecture & Data Flow
 
 The diagram below outlines the system pipeline from the moment an email is received to autonomous agent triage, database storage, and real-time dashboard notifications.
 
@@ -53,24 +124,54 @@ flowchart TB
 
 ---
 
-## ✨ Key Features & Enhancements
+
+## 🔄 End-to-End Workflow
+
+1. Customer email enters the system.
+2. The ingestion layer validates and deduplicates messages.
+3. Heuristic filters identify spam and malicious content.
+4. Relevant policy documents are retrieved from the vector database.
+5. The email is classified for:
+
+   * urgency
+   * sentiment
+   * category
+   * escalation requirements
+6. The LangGraph ReAct Agent executes reasoning steps and selects tools.
+7. The agent may:
+
+   * search company policies
+   * inspect customer history
+   * check account status
+   * create internal tickets
+   * draft replies
+   * escalate critical issues
+8. All reasoning traces are stored and displayed in the dashboard.
+9. Human operators review AI recommendations before final action.
+
+This creates a transparent, auditable, and production-style support workflow.
+
+
+---
+
+## Key Features & Enhancements
 
 *   **100% ReAct Agent Coverage**: Every valid inbox email is routed through the LangGraph ReAct agent loops. Only verified spam or blocklisted domains are filtered out.
 *   **Dual-Model Resiliency**: Utilizes Groq (`llama-3.1-8b-instant`) as the core agent engine with an instant fallback to Google Gemini (`gemini-3.1-flash-lite`) on rate limits (429 errors).
 *   **Modern Light-Theme UI**: A professional SaaS interface featuring:
     *   Clean white containers, soft gray borders, and generous workspace padding.
     *   Color-standardized urgency badges:
-        *   🔴 **Critical**: Soft Red (`bg-red-50 text-red-700`)
-        *   🟠 **High**: Orange (`bg-orange-50 text-orange-700`)
-        *   🟡 **Medium**: Amber (`bg-amber-50 text-amber-700`)
-        *   🔵 **Low**: Blue (`bg-blue-50 text-blue-700`)
+        *   **Critical**: Soft Red (`bg-red-50 text-red-700`)
+        *   **High**: Orange (`bg-orange-50 text-orange-700`)
+        *   **Medium**: Amber (`bg-amber-50 text-amber-700`)
+        *   **Low**: Blue (`bg-blue-50 text-blue-700`)
     *   Softer sentiment markers and highlighted inline email entities (prices, tickets, policy filenames).
 *   **Analytics Workspace**: Modern KPI summary cards, SVG sentiment timeline tracking, category distribution graphs, and a day-of-week response time heatmap.
 *   **RAG Knowledge Base**: A vector-search debugger panel to run semantic checks against seeded markdown policy files.
 
 ---
 
-## 🛠️ Technology Stack
+## Technology Stack
 
 *   **Backend**: Python (FastAPI) + SQLAlchemy (Async) + Alembic + Uvicorn
 *   **Database & Vector Store**: Supabase PostgreSQL with the `pgvector` extension
@@ -79,7 +180,7 @@ flowchart TB
 
 ---
 
-## ⚙️ Configuration (.env)
+## Configuration (.env)
 
 Create a configuration file at `backend/.env` containing the following values:
 
@@ -98,7 +199,7 @@ FRONTEND_URL=http://localhost:5173
 
 ---
 
-## 🚀 Quick Start Guide
+## Quick Start Guide
 
 ### Prerequisites
 *   Python 3.11+
